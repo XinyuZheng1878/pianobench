@@ -16,15 +16,16 @@ MediaPipe's "Left"/"Right" are swapped for this top view (verified: hit rate 0.9
 <0.1 unswapped), so "Left" is stored as the player's right hand.
 """
 import argparse
+import csv
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
-import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pmfinger.schema import check_output_path  # noqa: E402
@@ -34,13 +35,11 @@ N_WHITE = 52
 
 
 def read_tsv(path):
-    with open(path, encoding="utf-8") as f:
-        first = f.readline()
-    if first.startswith("#"):
-        df = pd.read_csv(path, sep="\t", skiprows=1, header=None,
-                         names=first.lstrip("#").strip().split("\t"), dtype=str)
-    else:
-        df = pd.read_csv(path, sep="\t", dtype=str)
+    """Read the dataset TSV with the standard library; no pandas runtime required."""
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        names = f.readline().lstrip("#").strip().split("\t")
+        rows = list(csv.DictReader(f, fieldnames=names, delimiter="\t"))
+    df = {k: np.array([row[k] for row in rows], dtype=str) for k in names}
     for c in ("onset", "key_offset", "frame_offset"):
         df[c] = df[c].astype(float)
     for c in ("note", "velocity"):
@@ -54,6 +53,20 @@ def parse_pt(s):
 
 
 def video_info(path):
+    if shutil.which("ffprobe") is None:
+        cap = cv2.VideoCapture(path)
+        try:
+            if not cap.isOpened():
+                raise ValueError(f"cannot open video: {path}")
+            W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = float(cap.get(cv2.CAP_PROP_FPS))
+            count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            if W <= 0 or H <= 0 or not np.isfinite(fps) or fps <= 0 or count <= 0:
+                raise ValueError(f"invalid video metadata: {path}")
+            return W, H, fps, count
+        finally:
+            cap.release()
     out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
                           "stream=width,height,r_frame_rate,nb_frames", "-of", "json", path],
                          capture_output=True, text=True, check=True).stdout
@@ -63,8 +76,16 @@ def video_info(path):
 
 
 def labels(df):
-    hand = df["hand"].str.strip().map({"L": 0, "R": 1}).fillna(-1).astype(int).to_numpy()
-    fin = pd.to_numeric(df["finger"].str.strip(), errors="coerce").fillna(0).astype(int).to_numpy() - 1
+    hand = np.array([{"L": 0, "R": 1}.get(str(x).strip(), -1) for x in df["hand"]])
+
+    def parse_finger(x):
+        try:
+            value = float(str(x).strip())
+            return int(value) - 1 if np.isfinite(value) and value.is_integer() else -1
+        except ValueError:
+            return -1
+
+    fin = np.array([parse_finger(x) for x in df["finger"]])
     bad = (hand < 0) | (fin < 0) | (fin > 4)
     return np.where(bad, -1, hand), np.where(bad, -1, fin)
 
@@ -103,8 +124,8 @@ def export(root, rec, meta, out_dir):
     df = read_tsv(os.path.join(root, "Fingering", f"{rec}.tsv"))
     gt_path = os.path.join(root, "Fingering_GT", f"{rec}.tsv")
     lh, lf = labels(df)
-    gh = np.full(len(df), -1)
-    gf = np.full(len(df), -1)
+    gh = np.full(len(df["onset"]), -1)
+    gf = np.full(len(df["onset"]), -1)
     if os.path.exists(gt_path):
         g = read_tsv(gt_path)
         gl = labels(g)
@@ -113,15 +134,15 @@ def export(root, rec, meta, out_dir):
             j = key.get((round(o, 4), int(p)))
             if j is not None:
                 gh[i], gf[i] = gl[0][j], gl[1][j]
-    pitch = df["note"].to_numpy()
-    onset = df["onset"].to_numpy()
+    pitch = df["note"]
+    onset = df["onset"]
     keep = (pitch >= 21) & (pitch <= 108)
     order = np.flatnonzero(keep)[np.lexsort((pitch[keep], onset[keep]))]   # schema's own sort order
 
     d = dict(video_id=np.array(rec), fps=np.array(fps), tips=tips.astype(np.float32), valid=valid,
-             note_onset=onset[order], note_offset=df["frame_offset"].to_numpy()[order],
-             note_key_offset=df["key_offset"].to_numpy()[order], note_pitch=pitch[order],
-             note_velocity=df["velocity"].to_numpy()[order], label_hand=lh[order], label_finger=lf[order],
+             note_onset=onset[order], note_offset=df["frame_offset"][order],
+             note_key_offset=df["key_offset"][order], note_pitch=pitch[order],
+             note_velocity=df["velocity"][order], label_hand=lh[order], label_finger=lf[order],
              gt_hand=gh[order], gt_finger=gf[order], wrist=wrist.astype(np.float32),
              frame_offset=np.array(0), video_path=np.array(os.path.abspath(os.path.join(root, "Video", f"{rec}.mp4"))))
     np.savez_compressed(os.path.join(out_dir, f"{rec}.npz"), **d)

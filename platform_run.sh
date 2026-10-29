@@ -7,7 +7,9 @@
 #   tail -f logs/platform_run.log                                      # 看进度（Ctrl+C 只是退出查看，不会停止任务）
 #
 # 可选环境变量：
-#   SPLITS=test         下载哪些 PianoVAM 划分（另外总会下载带人工指法的 11 段录音）
+#   SPLITS=test         下载哪些 PianoVAM 划分（这些录音自带的人工指法也会下载）
+#   WITH_GT=1           另外下载全部 11 段带人工指法的录音（只在评估指法准确率时需要，出题用不到）
+#   DL_WORKERS=6        同时下载几个文件
 #   BENCH_SPLIT=test    用哪个划分出题
 #   PER_TASK=30         每个任务的事实数（先 30 试跑，正式约 600）
 #   DATA=../pianovam_data   原始数据存放位置（默认放在仓库旁边，不进 git）
@@ -45,14 +47,18 @@ ffmpeg -version | head -1
 "${PY}" -B scripts/selftest.py | tail -1 | grep -q "ALL PASS" || die "自检没通过"
 echo "环境正常"
 
-step "2/5 下载 PianoVAM（${SPLITS} 划分 + 带人工指法的录音）到 ${DATA}"
-if [ -z "${HF_ENDPOINT:-}" ] && ! curl -s -o /dev/null --max-time 8 https://huggingface.co; then export HF_ENDPOINT=https://hf-mirror.com; fi
+step "2/5 下载 PianoVAM（${SPLITS} 划分）到 ${DATA}"
+# 平台直连 HuggingFace 经常超时或很慢，默认走国内镜像（想直连就设 HF_ENDPOINT=https://huggingface.co）
+export HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}
+# 新的 Xet 下载通道在平台上会报 “error decoding response body”，关掉改用普通下载
+export HF_HUB_DISABLE_XET=${HF_HUB_DISABLE_XET:-1}
 echo "HuggingFace 地址：${HF_ENDPOINT:-https://huggingface.co}"
-"${PY}" scripts/download_pianovam.py --root "${DATA}" --splits "${SPLITS}" --dry-run | head -1 || die "连不上数据集"
+GT_FLAG=$([ "${WITH_GT:-0}" = 1 ] || echo --no-gt)
+"${PY}" scripts/download_pianovam.py --root "${DATA}" --splits "${SPLITS}" ${GT_FLAG} --dry-run | head -1 || die "连不上数据集"
 export HF_HUB_DOWNLOAD_TIMEOUT=60
 ok=0
 for try in 1 2 3 4 5 6; do
-  if "${PY}" scripts/download_pianovam.py --root "${DATA}" --splits "${SPLITS}"; then ok=1; break; fi
+  if "${PY}" scripts/download_pianovam.py --root "${DATA}" --splits "${SPLITS}" ${GT_FLAG} --workers "${DL_WORKERS:-6}"; then ok=1; break; fi
   echo "下载出错，第 ${try} 次重试（已下载的文件会跳过）……"; sleep 5
 done
 [ "${ok}" = 1 ] || die "下载多次失败；检查网络后重新运行本脚本，会接着下"

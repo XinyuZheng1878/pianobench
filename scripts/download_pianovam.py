@@ -9,6 +9,7 @@ In mainland China set:  export HF_ENDPOINT=https://hf-mirror.com
 import argparse
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from huggingface_hub import HfApi, hf_hub_download
 
@@ -28,6 +29,7 @@ def main():
                     help="with --limit/--gt-limit: pick the smallest videos (>= --min-mb) instead of the first by date")
     ap.add_argument("--min-mb", type=float, default=30, help="with --smallest: skip very short recordings")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--workers", type=int, default=6, help="files downloaded in parallel")
     a = ap.parse_args()
     os.makedirs(a.root, exist_ok=True)
 
@@ -68,10 +70,25 @@ def main():
         print(f"  {p}  {sizes[p] / 1e6:.1f} MB")
     if a.dry_run:
         return
-    for p in todo:
-        if os.path.exists(os.path.join(a.root, p)):
-            continue
-        hf_hub_download(REPO, p, repo_type="dataset", local_dir=a.root)
+    left = [p for p in todo if not os.path.exists(os.path.join(a.root, p))]
+    print(f"already here: {len(todo) - len(left)} files; downloading {len(left)} files "
+          f"({sum(sizes[p] for p in left) / 1e9:.2f} GB) with {a.workers} in parallel", flush=True)
+    # big files first so the parallel slots stay busy until the end
+    left.sort(key=lambda p: -sizes[p])
+    done_b, errs = 0, []
+    with ThreadPoolExecutor(max(1, a.workers)) as ex:
+        futs = {ex.submit(hf_hub_download, REPO, p, repo_type="dataset", local_dir=a.root): p for p in left}
+        for k, fu in enumerate(as_completed(futs), 1):
+            p = futs[fu]
+            try:
+                fu.result()
+                done_b += sizes[p]
+                print(f"  [{k}/{len(left)}] ok  {p}  (total {done_b / 1e9:.2f} GB)", flush=True)
+            except Exception as e:  # keep going; the caller reruns and missing files are fetched again
+                errs.append(p)
+                print(f"  [{k}/{len(left)}] FAILED {p}: {type(e).__name__}: {str(e)[:200]}", flush=True)
+    if errs:
+        raise SystemExit(f"{len(errs)} files failed; run again to retry them")
     print("done")
 
 

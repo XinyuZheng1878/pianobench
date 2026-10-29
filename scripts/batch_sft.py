@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 MEDIA_LOCK = threading.Lock()
-PROFILE = "vam-core-sft-v1"
+PROFILE = "vam-core-sft-v2"
 BASELINE = "37169e51415b2792e3497a41c354fc778d2317c1"
 CORE = [("T1", s) for s in ("按键序列", "音区", "旋律走向", "织体", "和弦与音程")]
 CORE += [("T2", "哪只手"), ("T3", "按键次数（手）"),
@@ -31,25 +31,25 @@ CORE += [("T2", "哪只手"), ("T3", "按键次数（手）"),
 CONVENTIONS = """左手和右手均指演奏者本人的左右手。画面左侧是低音方向。
 C4是中央C，黑键用升号。时间均为当前交付片段相对秒数；区间左闭右开。
 一次按键是一个键的一次按下；同时按多个键分别计数，重复按同一键也分别计数。
+同时按下的分组以本组最早按下时刻为起点，40毫秒内的按下归同一组，不链式延长。
 不要推断手指身份、穿指跨指、悬空、手指持续接触或踏板状态。"""
-OBSERVE = """【任务】只根据题干和所附连续画面，写出可直接看到的简短观察。
+OBSERVE = """【任务】只根据题干与连续交付画面检查画面是否可供复核，不回答题目。
 【约定】""" + CONVENTIONS + """
-【输出】仅输出JSON：{"visible":true,"observations":["观察一句","观察一句"]}。
-visible是目标手与目标键是否清楚可见；看不清则false。observations写1到3句，每句最多60字。
-不要给最终答案，不要写选项字母，不要编造精确按键时刻，不要提记录、数据、事实卡或标注。预测题只能描述已交付画面，不能声称看到了未来。
-【示例】{"visible":true,"observations":["右手位于键盘中间偏右区域，片段中可见连续按键动作。"]}"""
-WRITE = """【任务】根据程序给定的题干、标准答案和带atom_id的事实，写简短解析。
+【检查字段】
+1. visible：所问时段的画面是否清楚、连续，布尔值true或false。
+2. keyboard_visible：目标琴键所在的键盘区域是否可见，布尔值true或false。
+3. target_region_visible：题目指定的手部区域是否可辨；问哪只手时须能区分两只手，布尔值true或false。
+【输出】只输出上述三个字段的JSON，不写任何动作、时刻、按键、接触状态或未来预测的自由描述。
+【示例】{"visible":true,"keyboard_visible":true,"target_region_visible":true}"""
+WRITE = """【任务】从程序证据中选择与本题有关的证据ID，并选择组织顺序。
 【约定】""" + CONVENTIONS + """
-【输入】question是固定题干；answer是只供写作核对的真值；atoms是允许引用的证据；observations来自独立看图。
-【输出】只输出JSON：{"analysis":[{"atom_ids":["e0001"],"text":"一句分析。"}]}。
-1. 输出1到4句，每句至少引用一个输入中真实存在的atom_id。只写与本题有关的事实。
-2. 不得自写“所以答案是”，不输出最终答案段。程序会写入真值，选择题只写字母。
-3. 手、键、时刻必须属于本句所引用的同一个原子，不能把几个原子的词随意组合。
-4. 不得补写任何手指身份、接触状态、踏板或没有证据的音乐表现；不得提“记录”“数据”“事实卡”“标注”等来源。
-5. 预测题的atoms全部来自切点前。只能分析过去的动作线索，不能用未来没有发生/发生了某事作为理由，也不要把预测说成必然。
-6. 时间用约X.X秒，不用超过一位小数。
-【示例】输入原子{"atom_id":"e0001","hand":"右手","key":"E4","press_s":1.2}，输出
-{"analysis":[{"atom_ids":["e0001"],"text":"右手在约1.2秒按下E4。"}]}"""
+【输入】question是固定题干；answer是真值；atoms为带atom_id的程序事实。不得添加不存在的事实。
+【输出】只输出JSON：{"atom_ids":["e00001","e00002"],"style":"chronological"}。
+1. atom_ids最多12个，必须来自输入。存在key_press原子时至少选择一个；尽量选择直接支持问题的全部相关按下事件。
+2. style只能是chronological（按时序）或concise（简洁叙述）。
+3. 不输出分析自由文本、画面动作描述、手指身份或最终答案。程序负责把引用的真实原子写成完整证据句和固定答案。
+4. 预测题的原子只包含已见历史；不能选取或虚构未来证据。
+【示例】{"atom_ids":["e00001"],"style":"concise"}"""
 JUDGE = """【任务】核对钢琴问答训练样本是否忠实于给定事实与观察。
 【约定】""" + CONVENTIONS + """
 【输出】仅输出JSON：{"hard_error":false,"faithful":9,"clear":9,"comment":"简短理由"}。
@@ -128,6 +128,73 @@ def validate_analysis(value, atoms, q):
                 raise ValueError("time not supported by cited atoms")
         if q["task"] == "T5" and re.search(r"切点后|切点之后|之后.{0,12}(没有|未|已经|发生|按下)", text):
             raise ValueError("future event used as prediction evidence")
+    return steps
+
+
+def program_summary(q, atoms):
+    """A typed conclusion derived from the generator's truth, never from model prose."""
+    content = (q["options"][ord(q["answer"]) - 65] if q["answer_type"] == "choice" else q["answer"])
+    task, subtype = q["task"], q["subtype"]
+    if task == "T3":
+        count = sum(a.get("kind") == "key_press" for a in atoms)
+        if int(content) != count:
+            raise ValueError("counter answer does not equal the number of event atoms")
+        text = f"所问区间内共有{count}次按下事件，同时按下的不同键分别计数。"
+    elif task == "T2":
+        target = q.get("extra", {}).get("key")
+        if target is None:
+            target = KEY_RE.findall(q["question"])[0]
+        events = [a for a in atoms if a.get("key") == target]
+        if len(events) != 1 or events[0]["hand"] != content:
+            raise ValueError("which-hand truth does not match the target event atom")
+        text = f"目标键{target}由{content}按下。"
+    elif task == "T4":
+        if isinstance(content, list):
+            text = f"该段旋律从首音按下到末音松开，对应约{content[0]:.1f}秒至{content[1]:.1f}秒。"
+        else:
+            text = f"所问和弦的首次按下时刻约为{float(content):.1f}秒。"
+    elif task == "T5":
+        text = f"根据截至{q['predict']['cut']:.1f}秒的已见片段，对接下来{q['predict']['horizon']:.1f}秒是否出现新一次按键作短时预测。"
+    elif subtype == "按键序列":
+        seq = " → ".join(content) if isinstance(content, list) else str(content)
+        text = f"按下的键依次为{seq}。"
+    elif subtype == "音区":
+        zone = str(content) if q["answer_type"] == "choice" else f"第{content}组（C{content}–B{content}）"
+        text = f"区间中按下的键主要位于{zone}。"
+    elif subtype == "旋律走向":
+        text = f"所问音符序列的整体走向为{content}。"
+    elif subtype == "织体":
+        text = f"按照题目采用的同时按下分组规则，区间内的织体为：{content}。"
+    else:
+        text = f"相应同时按下的键构成{content}。"
+    return dict(atom_id="program_summary", kind="task_summary", text=text)
+
+
+def controlled_analysis(value, atoms, q):
+    if set(value) != {"atom_ids", "style"} or value["style"] not in ("chronological", "concise"):
+        raise ValueError("output exactly atom_ids and style; do not write free text")
+    ids = value["atom_ids"]
+    by_id = {a["atom_id"]: a for a in atoms}
+    if (not isinstance(ids, list) or len(ids) > 12 or any(not isinstance(i, str) or i not in by_id for i in ids)
+            or len(ids) != len(set(ids))):
+        raise ValueError("invalid or invented evidence IDs")
+    events = [a for a in atoms if a.get("kind") == "key_press"]
+    chosen = [by_id[i] for i in ids if by_id[i].get("kind") == "key_press"]
+    if events and not chosen:
+        raise ValueError("select at least one real key_press evidence ID")
+    if q["task"] == "T3":
+        chosen = events  # A count explanation cannot silently omit counted events.
+    steps = []
+    for atom in sorted(chosen, key=lambda a: a["press_s"]):
+        if value["style"] == "chronological":
+            text = f"{atom['hand']}在约{atom['press_s']:.1f}秒按下{atom['key']}。"
+        else:
+            text = f"约{atom['press_s']:.1f}秒时，{atom['hand']}按下{atom['key']}。"
+        steps.append(dict(atom_ids=[atom["atom_id"]], text=text))
+    summary = by_id.get("program_summary")
+    if summary is None:
+        raise ValueError("missing program-derived task summary")
+    steps.append(dict(atom_ids=[summary["atom_id"]], text=summary["text"]))
     return steps
 
 
@@ -549,6 +616,7 @@ def produce_one(api, root, row, d, plan):
         with MEDIA_LOCK:
             media = frame_pack(root, q, d)
         atoms = evidence(q, d, media["frames"])
+        atoms.append(program_summary(q, atoms))
         key = digest([q, media, atoms, plan["code_sha256"], plan["prompt_sha256"]])
         if result_path.exists():
             old = read_json(result_path)
@@ -563,10 +631,10 @@ def produce_one(api, root, row, d, plan):
         stage = "B"
         obs, raw = api.call("Qwen3.8-27B", OBSERVE, content, 700)
         record["api"].append(dict(stage="B", **raw))
-        observations = obs.get("observations")
-        if (obs.get("visible") is not True or not isinstance(observations, list) or not 1 <= len(observations) <= 3
-                or any(not isinstance(x, str) or not 3 <= len(x) <= 80 or any(w in x for w in FORBIDDEN) for x in observations)):
-            raise ValueError("visual pass uncertain or unsupported observation")
+        fields = ("visible", "keyboard_visible", "target_region_visible")
+        if set(obs) != set(fields) or any(type(obs.get(k)) is not bool or not obs[k] for k in fields):
+            raise ValueError("visual pass uncertain or malformed structured fields")
+        observations = ["交付画面中可见键盘，所问手部所在区域清晰可辨。"]
         card = dict(question=q["question"], task=q["task"], answer=answer_text(q),
                     answer_content=q["options"][ord(q["answer"]) - 65] if q["answer_type"] == "choice" else q["answer"],
                     atoms=atoms, observations=observations)
@@ -575,7 +643,7 @@ def produce_one(api, root, row, d, plan):
             out, raw = api.call("Qwen3.8-27B", WRITE, json.dumps(card, ensure_ascii=False))
             record["api"].append(dict(stage="D", **raw))
             try:
-                analysis = validate_analysis(out, atoms, q)
+                analysis = controlled_analysis(out, atoms, q)
                 break
             except ValueError as e:
                 if attempt:

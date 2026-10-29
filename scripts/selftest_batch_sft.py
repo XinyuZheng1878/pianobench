@@ -7,10 +7,36 @@ import numpy as np
 import csv
 from types import SimpleNamespace
 from batch_sft import (answer_text, final_answer, grid_offsets, judge_pass,
-                       partition, validate_analysis, shuffle_choices, check_event_visibility, decode_reply, ModelReplyError)
+                       partition, validate_analysis, shuffle_choices, check_event_visibility, decode_reply, ModelReplyError, controlled_analysis, program_summary)
 
 
 class ProductionTests(unittest.TestCase):
+    def test_free_visual_narrative_cannot_enter_controlled_analysis(self):
+        with self.assertRaises(ValueError):
+            controlled_analysis(dict(atom_ids=[], style="concise", text="2.25秒起未再按键。"), [], dict(task="T3"))
+
+    def test_counter_uses_all_atoms_and_checks_program_truth(self):
+        q = dict(task="T3", subtype="按键次数（手）", answer_type="choice", answer="A", options=["2", "3"])
+        atoms = [dict(atom_id="e1", kind="key_press", hand="左手", key="D4", press_s=2.0),
+                 dict(atom_id="e2", kind="key_press", hand="左手", key="E4", press_s=2.7)]
+        atoms.append(program_summary(q, atoms))
+        steps = controlled_analysis(dict(atom_ids=["e1"], style="chronological"), atoms, q)
+        self.assertTrue(any("2.7秒" in x["text"] for x in steps))
+        self.assertTrue(any("共有2次" in x["text"] for x in steps))
+        with self.assertRaises(ValueError):
+            program_summary(dict(q, answer="B"), atoms[:2])
+
+    def test_controlled_analysis_rejects_invented_atom(self):
+        with self.assertRaises(ValueError):
+            controlled_analysis(dict(atom_ids=["invented"], style="concise"), [], dict(task="T1"))
+
+    def test_forecast_summary_contains_no_future_event(self):
+        q = dict(task="T5", subtype="会不会按键", answer_type="choice", answer="B", options=["会", "不会"],
+                 predict=dict(cut=2.0, horizon=0.2))
+        summary = program_summary(q, [])
+        self.assertIn("作短时预测", summary["text"])
+        self.assertNotIn("没有", summary["text"])
+
     def test_invalid_json_preserves_real_usage_and_raw_reply(self):
         result = dict(choices=[dict(message=dict(content="{'bad':true}"), finish_reason="stop")], usage=dict(total_tokens=123))
         with self.assertRaises(ModelReplyError) as caught:

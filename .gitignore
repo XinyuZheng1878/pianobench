@@ -1,0 +1,5 @@
+.venv/
+work_test/
+*.tgz
+__pycache__/
+logs/

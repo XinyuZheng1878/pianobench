@@ -86,8 +86,8 @@ def labels(df):
             return -1
 
     fin = np.array([parse_finger(x) for x in df["finger"]])
-    bad = (hand < 0) | (fin < 0) | (fin > 4)
-    return np.where(bad, -1, hand), np.where(bad, -1, fin)
+    bad_finger = (hand < 0) | (fin < 0) | (fin > 4)
+    return hand, np.where(bad_finger, -1, fin)
 
 
 def export(root, rec, meta, out_dir):

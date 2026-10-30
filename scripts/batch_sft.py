@@ -402,10 +402,13 @@ def prepare_video(a, root, record):
                 or int(z["frame_offset"]) != 0
                 or not np.array_equal(d.on, np.rint(z["note_onset"] * d.fps).astype(int) + d.av)):
             raise ValueError("performance/result timeline mismatch")
-        if "note_key_offset" not in z or not np.isfinite(z["note_key_offset"]).all():
+        if "note_key_offset" not in z or not np.isfinite(z["note_key_offset"]).all() or (z["note_key_offset"] < z["note_onset"]).any():
             raise ValueError("missing real key release")
-        ah = z["label_hand"]
-        d.hand_trust &= (ah >= 0) & (ah == d.hand)
+        from p0_restore import state
+        d.hand, d.hand_src, _ = state.trust_sources(dict(z), dict(r))
+        d.hand_trust = d.hand >= 0
+        # A rounded zero-frame press is invisible, not an invented one-frame hold.
+        d.rel = np.rint(z["note_key_offset"] * d.fps).astype(int) + d.av
         # No finger subtype is enabled; also suppress automatic finger claims in cards.
         d.finger_trust[:] = False
     qc = root / "qc" / (vid + ".json")
@@ -484,14 +487,17 @@ def frame_pack(root, q, d):
     import numpy as np
     c0, c1, fps = q["clip"]["start_frame"], q["clip"]["end_frame"], d.fps
     pred = q["task"] == "T5"
-    offs = grid_offsets(c1 - c0, fps, q["frame_fps"], pred)
+    offs = ([int(t) - c0 for t in q["delivery_frames"]] if "delivery_frames" in q
+            else grid_offsets(c1 - c0, fps, q["frame_fps"], pred))
+    if not offs or offs != sorted(set(offs)) or offs[0] != 0 or offs[-1] >= c1-c0:
+        raise ValueError("invalid explicit delivery grid")
     if pred and abs(offs[-1] / fps - q["predict"]["cut"]) > 1e-8:
         raise ValueError("last frame is not the stated prediction now")
     folder = root / "media" / q["clip_id"]
     manifest = folder / "manifest.json"
     if manifest.exists():
         m = read_json(manifest)
-        if m["offsets"] != offs or any(not (root / p["path"]).is_file() or file_hash(root / p["path"]) != p["sha256"] for p in m["packs"]):
+        if m["offsets"] != offs or any(not (root / p["path"]).is_file() or file_hash(root / p["path"]) != p["sha256"] for p in m["packs"] + m["frames"]):
             raise ValueError("frame cache integrity mismatch")
         return m
     folder.mkdir(parents=True, exist_ok=True)
@@ -589,9 +595,15 @@ def evidence(q, d, frames):
     from pmfinger.states import HAND_ZH, pitch_name
     atoms = []
     ff = np.array([f["native_frame"] for f in frames])
-    if q["task"] != "T5":
-        sensitive = q["task"] == "T4" or (q["task"] == "T1" and q["subtype"] != "音区")
-        check_event_visibility(d.on, d.rel, d.pitch, d.onset_s, d.events(idx), ff, d.fps, sensitive)
+    # P0 gates apply to every enabled key subtype, including historical evidence for prediction.
+    from p0_restore import state, retrospective_gate
+    hand = np.where(d.hand_trust, d.hand, -1)
+    raw = state.Perf(d.vid, d.fps, d.T, d.perf.video_path, d.pitch, d.on, d.rel,
+                     hand, np.full(d.N, "v2_auto_agreement"), np.full(d.N, -1),
+                     np.full((d.T, 2), np.nan), np.full((d.T, 2, 5), np.nan), d.ok, d.onset_s)
+    sensitive = q["task"] == "T4" or (q["task"] == "T1" and q["subtype"] != "音区")
+    for target_hand in ([h] if h is not None else [0, 1]):
+        retrospective_gate(raw, target_hand, a, b, ff, sensitive)
     for n in idx:
         # For retrospective key questions at least one delivered frame must show the press held.
         if q["task"] != "T5" and not ((ff >= d.on[n]) & (ff < d.rel[n])).any():

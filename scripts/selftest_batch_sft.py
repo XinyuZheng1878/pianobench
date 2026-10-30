@@ -91,7 +91,7 @@ class ProductionTests(unittest.TestCase):
                 h, f = env["labels"](data)
                 self.assertEqual(data["note"].tolist(), [60, 64])
                 self.assertEqual(data["key_offset"].tolist(), [1.5, 2.2])
-                self.assertEqual(h.tolist(), [0, -1])
+                self.assertEqual(h.tolist(), [0, 1])  # A missing finger does not erase an independently known hand.
                 self.assertEqual(f.tolist(), [1, -1])
 
     def test_gold_and_related_piece_never_train(self):

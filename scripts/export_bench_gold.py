@@ -87,7 +87,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--bench", required=True)
     ap.add_argument("--out", required=True, help="new folder")
-    ap.add_argument("--approvals", default="", help="jsonl of {qid, fact_hash, decision, reviewer}")
+    ap.add_argument("--approvals", nargs="*", default=[],
+                    help="one or more jsonl files of {qid, fact_hash, decision, reviewer} (from the review page)")
     ap.add_argument("--include-unreviewed", action="store_true",
                     help="also export finger questions nobody has approved yet (dry evaluation only)")
     a = ap.parse_args()
@@ -98,8 +99,10 @@ def main():
     rows = [r for r in rows if r.get("status") != "delivery_failed" and "media" in r]
 
     approved, rejected = set(), set()
-    if a.approvals:
-        for l in open(a.approvals, encoding="utf-8"):
+    for path in a.approvals:
+        for l in open(path, encoding="utf-8"):
+            if not l.strip():
+                continue
             x = json.loads(l)
             if not str(x.get("reviewer", "")).strip():
                 continue

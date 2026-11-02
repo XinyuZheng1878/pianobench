@@ -75,27 +75,30 @@ def time_choice(question, at, ans, length, seed):
     if at == "time_point":
         t = float(ans)
         cand = [t + k * STEP_S for k in (-3, -2, -1, 1, 2, 3) if 0 <= t + k * STEP_S <= length]
-        if len(cand) < 3:
-            return None
-        opts = [t] + rnd.sample(cand, 3)
+        true = t
         show = lambda x: f"第 {x:.1f} 秒"
     else:
         a, b = float(ans[0]), float(ans[1])
         cand = []
-        for da in (-1, 0, 1):
-            for db in (-1, 0, 1):
+        for da in (-2, -1, 0, 1, 2):
+            for db in (-2, -1, 0, 1, 2):
                 x, y = a + da * STEP_S, b + db * STEP_S
                 if (da, db) != (0, 0) and 0 <= x < y <= length:
                     cand.append((x, y))
-        if len(cand) < 3:
-            return None
-        opts = [(a, b)] + rnd.sample(cand, 3)
+        true = (a, b)
         show = lambda x: f"第 {x[0]:.1f} 秒到第 {x[1]:.1f} 秒"
+    # the true option's rank among the 4 (earliest ... latest) is drawn uniformly, so "pick the middle one" is no
+    # better than chance; ranks that the clip cannot supply enough earlier / later options for are skipped
+    lower, higher = [c for c in cand if c < true], [c for c in cand if c > true]
+    ranks = [k for k in range(4) if len(lower) >= k and len(higher) >= 3 - k]
+    if not ranks:
+        return None
+    k = rnd.choice(ranks)
+    opts = [true] + rnd.sample(lower, k) + rnd.sample(higher, 3 - k)
     labels = [show(o) for o in opts]
     if len(set(labels)) != 4:
         return None
-    order = list(range(4))
-    rnd.shuffle(order)
+    order = sorted(range(4), key=lambda i: opts[i])     # options listed from earliest to latest
     choices = [labels[i] for i in order]
     letter = LETTERS[order.index(0)]
     stem = question
@@ -117,7 +120,7 @@ def to_eval(r, time_as_choice=True):
     length = round(frames[-1]["t"] - t0 + 1.0 / q["clip"]["fps_out"], 3)
     question, options = q["question"], q.get("options")
     if time_as_choice and at in ("time_point", "time_span"):
-        tc = time_choice(question, at, a, length, r["qid"])
+        tc = time_choice(question, at, a, len(frames) / q["clip"]["fps_out"], r["qid"])
         if tc is None:
             return None
         question, options, a = tc

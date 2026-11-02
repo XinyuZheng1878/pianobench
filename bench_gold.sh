@@ -10,6 +10,7 @@
 #   WORKERS 指法步骤并行进程数（默认 8）
 #   PER_SUBTYPE 第 3 步每个子题的题数（11 段合计，默认 20）
 #   BENCH  第 3 步输出目录（默认 ${WORK}/bench_v1，必须是新目录）
+#   EXTEND 在这个已有题库上追加题（已有题原样保留），例如 EXTEND=../gold_work/bench_v1 BENCH=../gold_work/bench_v2 PER_SUBTYPE=50
 set -euo pipefail
 cd "$(dirname "$0")"
 GOLD=${GOLD:-../gold_data}
@@ -59,7 +60,7 @@ build() {
   BENCH=${BENCH:-${WORK}/bench_v1}
   step "3 出题并渲染帧 → ${BENCH}（每个子题 ${PER_SUBTYPE:-20} 题）"
   ${PY} -B scripts/build_bench_gold.py --work "${WORK}" --gold-ids "${GOLD}/gold_ids.txt" --out "${BENCH}" \
-    --per-subtype "${PER_SUBTYPE:-20}"
+    --per-subtype "${PER_SUBTYPE:-20}" ${EXTEND:+--extend "${EXTEND}"}
   echo "✅ 第 3 步完成：题目 ${BENCH}/questions.jsonl，统计 ${BENCH}/report.md，浏览页 ${BENCH}/index.html"
 }
 

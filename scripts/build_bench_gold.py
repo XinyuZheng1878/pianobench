@@ -125,42 +125,53 @@ def scan(P, source_hash, rnd, stride_s):
     return cand, rejected
 
 
-def select(pool, n, rnd):
-    """Pick up to n candidates: answers as even as possible, recordings in turn, no same-subtype overlap."""
+def row_span(row):
+    fr = row["question"]["frames"]
+    return fr[0]["video_frame"], fr[-1]["video_frame"] + 1
+
+
+def select(pool, n, rnd, existing=()):
+    """Pick until the subtype has n questions (existing ones count): the answer that is rarest so far goes
+    first, the recording used least so far goes first, and no two questions of one subtype overlap in time
+    in the same recording."""
+    have = {r["qid"] for r in existing}
     by_cls = collections.defaultdict(lambda: collections.defaultdict(list))
     for vid, c0, c1, row in pool:
-        by_cls[answer_class(row)][vid].append((c0, c1, row))
+        if row["qid"] not in have:
+            by_cls[answer_class(row)][vid].append((c0, c1, row))
     for vids in by_cls.values():
         for lst in vids.values():
             rnd.shuffle(lst)
-    taken, spans = [], collections.defaultdict(list)
-    classes = sorted(by_cls)
-    rnd.shuffle(classes)
-    turn = collections.Counter()
-    while len(taken) < n:
-        progress = False
-        for cls in classes:
-            if len(taken) >= n:
-                break
-            vids = [v for v in sorted(by_cls[cls]) if by_cls[cls][v]]
-            if not vids:
-                continue
-            vids.sort(key=lambda v: turn[v])          # the recording used least so far goes first
-            for v in vids:
-                lst = by_cls[cls][v]
-                while lst:
-                    c0, c1, row = lst.pop()
-                    if any(max(c0, a) < min(c1, b) for a, b in spans[v]):
-                        continue
-                    taken.append(row)
-                    spans[v].append((c0, c1))
-                    turn[v] += 1
-                    progress = True
-                    break
-                if progress:
-                    break
-        if not progress:
+    spans, turn, count = collections.defaultdict(list), collections.Counter(), collections.Counter()
+    for r in existing:
+        v = r["question"]["video_id"]
+        spans[v].append(row_span(r))
+        turn[v] += 1
+        count[answer_class(r)] += 1
+    taken = []
+    tie = {c: rnd.random() for c in by_cls}
+    while len(existing) + len(taken) < n:
+        live = [c for c in by_cls if any(by_cls[c].values())]
+        if not live:
             break
+        cls = min(live, key=lambda c: (count[c], tie[c]))
+        picked = False
+        for v in sorted((v for v in by_cls[cls] if by_cls[cls][v]), key=lambda v: (turn[v], v)):
+            lst = by_cls[cls][v]
+            while lst:
+                c0, c1, row = lst.pop()
+                if any(max(c0, a) < min(c1, b) for a, b in spans[v]):
+                    continue
+                taken.append(row)
+                spans[v].append((c0, c1))
+                turn[v] += 1
+                count[cls] += 1
+                picked = True
+                break
+            if picked:
+                break
+        if not picked:
+            by_cls.pop(cls)                       # every remaining candidate of this answer overlaps
     return taken
 
 
@@ -195,13 +206,24 @@ def main():
     ap.add_argument("--stride", type=float, default=0.5, help="window step in seconds")
     ap.add_argument("--seed", type=int, default=20261102)
     ap.add_argument("--no-media", action="store_true", help="skip frame rendering (fast dry run)")
+    ap.add_argument("--extend", default="", help="earlier bench folder: keep all its questions unchanged (same qid, "
+                    "answer and frames) and only add new ones up to --per-subtype")
     a = ap.parse_args()
     work, out = Path(a.work).resolve(), Path(a.out).resolve()
     if out.exists():
         raise SystemExit(f"{out} already exists; choose a new --out")
     videos = Path(a.gold_ids).read_text(encoding="utf-8").split()
+    keep = []
+    if a.extend:
+        prev = Path(a.extend).resolve()
+        keep = [json.loads(l) for l in open(prev / "questions.jsonl", encoding="utf-8")]
+        print(f"extending {prev}: keeping its {len(keep)} questions", flush=True)
     out.mkdir(parents=True)
     (out / "perf").symlink_to(work / "perf", target_is_directory=True)   # read-only, for the frame renderer
+    for r in keep:                                                      # reuse the frames already rendered
+        if "media" in r:
+            (out / "media").mkdir(exist_ok=True)
+            (out / "media" / r["qid"]).symlink_to(prev / "media" / r["qid"], target_is_directory=True)
 
     pools, rejected, perfs = collections.defaultdict(list), collections.defaultdict(collections.Counter), {}
     for vid in videos:
@@ -217,14 +239,20 @@ def main():
         print(f"{vid}: {sum(len(v) for v in cand.values())} candidates", flush=True)
 
     rnd = random.Random(a.seed)
-    rows = []
-    for key in sorted(pools):
-        rows += select(pools[key], a.per_subtype, rnd)
+    kept_by = collections.defaultdict(list)
+    for r in keep:
+        kept_by[r["question"]["task"] + "/" + r["question"]["subtype"]].append(r)
+    new = []
+    for key in sorted(set(pools) | set(kept_by)):
+        new += select(pools.get(key, []), a.per_subtype, rnd, kept_by.get(key, []))
+    for r in new:
+        r["batch"] = Path(a.out).name
+    rows = keep + new
     rows.sort(key=lambda r: (r["question"]["task"], r["question"]["subtype"], r["question"]["video_id"],
                              r["question"]["clip"]["frame0"]))
-    print(f"selected {len(rows)} questions", flush=True)
+    print(f"selected {len(rows)} questions ({len(keep)} kept, {len(new)} new)", flush=True)
 
-    for i, row in enumerate(rows):
+    for i, row in enumerate(new):
         q, P = row["question"], perfs[row["question"]["video_id"]]
         if not a.no_media:
             frames = q["frames"]
@@ -241,7 +269,9 @@ def main():
                 row.update(status="delivery_failed", error=f"{type(e).__name__}: {e}")
         atomic_json(out / "results" / (row["qid"] + ".json"), row)
         if (i + 1) % 50 == 0:
-            print(f"  rendered {i + 1}/{len(rows)}", flush=True)
+            print(f"  rendered {i + 1}/{len(new)}", flush=True)
+    for row in keep:
+        atomic_json(out / "results" / (row["qid"] + ".json"), row)
     ok = [r for r in rows if r["status"] != "delivery_failed"]
     with open(out / "questions.jsonl", "w", encoding="utf-8") as fo:
         for r in ok:
@@ -249,7 +279,8 @@ def main():
     report(out, ok, pools, rejected, videos)
     if not a.no_media:
         P0.render_page(out, ok)
-    print(json.dumps(dict(out=str(out), questions=len(ok), delivery_failed=len(rows) - len(ok),
+    print(json.dumps(dict(out=str(out), questions=len(ok), kept=len(keep), added=len(new),
+                          delivery_failed=len(rows) - len(ok),
                           needs_human=sum(r["needs_human"] for r in ok)), ensure_ascii=False))
 
 

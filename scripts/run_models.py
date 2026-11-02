@@ -49,10 +49,11 @@ def build_messages(q, root, system, setting, max_side, as_path, video_as):
     if setting == "F":
         fl = q["media"]["frames"]
         fps = q["frame_fps"]
-        content.append({"type": "text", "text": f"下面是视频按 {fps} fps 抽取的 {len(fl)} 帧，按时间顺序排列，"
-                                                f"第 k 帧对应第 k/{fps} 秒。"})
+        times = q["media"].get("frame_times") or [k / fps for k in range(len(fl))]
+        content.append({"type": "text", "text": f"下面是视频按约 {fps} fps 抽取的 {len(fl)} 帧，按时间顺序排列，"
+                                                f"每帧前标有它的帧号和时间。"})
         for k, f in enumerate(fl):
-            t = f"{k / fps:.3f}".rstrip("0").rstrip(".")
+            t = f"{times[k]:.3f}".rstrip("0").rstrip(".")
             content.append({"type": "text", "text": f"[第 {k} 帧 · {t if '.' in t else t + '.0'} 秒]"})
             content.append({"type": "image_url", "image_url": {"url": img_url(os.path.join(root, f), max_side, as_path)}})
     elif setting == "V":

@@ -47,7 +47,7 @@ def braces(s):
 
 def norm(s):
     s = s.strip()
-    tbl = str.maketrans("０１２３４５６７８９ＡＢＣＤＥａｂｃｄｅ，．", "0123456789ABCDEabcde,.")
+    tbl = str.maketrans("０１２３４５６７８９ＡＢＣＤＥＦＧａｂｃｄｅｆｇ，．", "0123456789ABCDEFGabcdefg,.")
     return s.translate(tbl)
 
 
@@ -129,12 +129,12 @@ def score(q, output):
     if at == "choice":
         s = norm(raw).replace(" ", "").rstrip(".．。")
         letter = None
-        if re.fullmatch(r"[A-Ea-e]", s):
+        if re.fullmatch(r"[A-Ga-g]", s):
             letter = s.upper()
         elif q.get("options"):
             for i, o in enumerate(q["options"]):
-                if s == o.replace(" ", "") or re.sub(r"^[A-Ea-e][.．、:：]", "", s) == o.replace(" ", ""):
-                    letter = "ABCDE"[i]
+                if s == o.replace(" ", "") or re.sub(r"^[A-Ga-g][.．、:：]", "", s) == o.replace(" ", ""):
+                    letter = "ABCDEFG"[i]
         if letter is None:
             r["fmt_err"] = True
             return r
@@ -227,7 +227,7 @@ def baseline_outputs(qs, kind, rng):
         maj = collections.defaultdict(collections.Counter)
         fact_ans = {}
         for q in qs:
-            a = q["options"]["ABCDE".index(q["answer"])] if q["answer_type"] == "choice" else q["answer"]
+            a = q["options"]["ABCDEFG".index(q["answer"])] if q["answer_type"] == "choice" else q["answer"]
             key = (q["task"], q["subtype"], q["answer_type"])
             k = (key, q["fact_id"])
             if k not in fact_ans:      # count each fact once
@@ -236,7 +236,7 @@ def baseline_outputs(qs, kind, rng):
     for q in qs:
         if kind == "random":
             if q["answer_type"] == "choice":
-                out[q["qid"]] = "{" + "ABCDE"[int(rng.integers(len(q["options"])))] + "}"
+                out[q["qid"]] = "{" + "ABCDEFG"[int(rng.integers(len(q["options"])))] + "}"
             elif q["answer_type"] in ("time_point", "frame"):
                 L = q["clip"]["length_s"]
                 v = rng.uniform(0, L)
@@ -256,7 +256,7 @@ def baseline_outputs(qs, kind, rng):
             for txt, _ in cnt.most_common():
                 t = json.loads(txt)
                 if t in q["options"]:
-                    out[q["qid"]] = "{" + "ABCDE"[q["options"].index(t)] + "}"
+                    out[q["qid"]] = "{" + "ABCDEFG"[q["options"].index(t)] + "}"
                     break
             else:
                 out[q["qid"]] = "{A}"
@@ -396,8 +396,8 @@ def main():
             f"{np.mean([r['score'] for r in rs if r['qa_type'] == x and r['task'] in TASKS]):.2f}"
             if any(r['qa_type'] == x and r['task'] in TASKS for r in rs) else "–" for x in ("单选", "填空", "描述")) + " |")
     L.append("\n**单选的选项偏好**（各字母被选比例；真值分布见最后一行）：\n")
-    L.append("| 运行 | A | B | C | D | E |")
-    L.append("|---|---|---|---|---|---|")
+    L.append("| 运行 | A | B | C | D | E | F | G |")
+    L.append("|---|---|---|---|---|---|---|---|")
     for name, rs in list(by_run.items()) + [("真值", None)]:
         if rs is None:
             c = collections.Counter(q["answer"] for q in qs if q["answer_type"] == "choice" and q["task"] in TASKS)
@@ -405,7 +405,7 @@ def main():
             c = collections.Counter(json.loads(r["extra"]).get("letter") for r in rs if r["answer_type"] == "choice" and r["task"] in TASKS)
             c.pop(None, None)
         tot = sum(c.values()) or 1
-        L.append(f"| {name} | " + " | ".join(f"{c[x] / tot:.0%}" for x in "ABCDE") + " |")
+        L.append(f"| {name} | " + " | ".join(f"{c[x] / tot:.0%}" for x in "ABCDEFG") + " |")
     L.append("\n**对照题**（踏板，只能答“无法从画面判断”）：\n")
     for name, rs in by_run.items():
         cr = [r for r in rs if r["task"] == "C1"]
@@ -422,8 +422,8 @@ def main():
                 v = json.loads(r["extra"]).get("letter") if q["answer_type"] == "choice" else r["pred"]
                 g = q["answer"]
                 try:
-                    vi = "ABCDE".index(v) if q["answer_type"] == "choice" else int(v) - 1
-                    gi = "ABCDE".index(g) if q["answer_type"] == "choice" else int(g) - 1
+                    vi = "ABCDEFG".index(v) if q["answer_type"] == "choice" else int(v) - 1
+                    gi = "ABCDEFG".index(g) if q["answer_type"] == "choice" else int(g) - 1
                     adj += abs(vi - gi) == 1
                 except (ValueError, TypeError):
                     pass

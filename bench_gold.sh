@@ -3,6 +3,7 @@
 #
 #   bash bench_gold.sh derive      # 第 2 步：导出、八度质检、指法（PMFinger v2 冻结配置）
 #   bash bench_gold.sh build       # 第 3 步：出题并渲染帧（不调用任何模型 API）
+#   bash bench_gold.sh export      # 第 4 步：导出测评集（答案均衡规则、人工复核筛选、系统提示）
 #
 # 环境变量：
 #   GOLD   第 1 步 prep_gold.py 的输出目录（默认 ../gold_data）
@@ -10,6 +11,8 @@
 #   WORKERS 指法步骤并行进程数（默认 8）
 #   PER_SUBTYPE 第 3 步每个子题的题数（11 段合计，默认 20）
 #   BENCH  第 3 步输出目录（默认 ${WORK}/bench_v1，必须是新目录）
+#   RELEASE 第 4 步输出目录（默认 ${WORK}/release_<BENCH 的名字>，必须是新目录）
+#   APPROVALS 人工复核结果文件（jsonl）；INCLUDE_UNREVIEWED=1 时连未复核的指法题也导出（只用于试跑测评）
 #   EXTEND 在这个已有题库上追加题（已有题原样保留），例如 EXTEND=../gold_work/bench_v1 BENCH=../gold_work/bench_v2 PER_SUBTYPE=50
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -64,8 +67,20 @@ build() {
   echo "✅ 第 3 步完成：题目 ${BENCH}/questions.jsonl，统计 ${BENCH}/report.md，浏览页 ${BENCH}/index.html"
 }
 
+export_release() {
+  BENCH=${BENCH:-${WORK}/bench_v1}
+  RELEASE=${RELEASE:-${WORK}/release_$(basename "${BENCH}")}
+  step "4 导出测评集 ${BENCH} → ${RELEASE}"
+  ${PY} -B scripts/export_bench_gold.py --bench "${BENCH}" --out "${RELEASE}" \
+    ${APPROVALS:+--approvals "${APPROVALS}"} $([ "${INCLUDE_UNREVIEWED:-0}" = 1 ] && echo --include-unreviewed)
+  echo "✅ 第 4 步完成：${RELEASE}/questions.jsonl，导出报告 ${RELEASE}/export_report.md"
+  echo "测评：python3 -B scripts/run_models.py --release ${RELEASE} --base-url <接口地址> --model <模型名> --setting F --out ${RELEASE}/runs/<模型名>_F.jsonl"
+  echo "评分：python3 -B scripts/evaluate.py --questions ${RELEASE}/questions.jsonl --runs ${RELEASE}/runs/*.jsonl --out ${RELEASE}/report"
+}
+
 case "${1:-}" in
   derive) derive ;;
   build) build ;;
-  *) echo "用法: bash bench_gold.sh derive | build"; exit 2 ;;
+  export) export_release ;;
+  *) echo "用法: bash bench_gold.sh derive | build | export"; exit 2 ;;
 esac

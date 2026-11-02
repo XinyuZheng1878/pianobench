@@ -74,7 +74,7 @@ export_release() {
   step "4 导出测评集 ${BENCH} → ${RELEASE}"
   ${PY} -B scripts/export_bench_gold.py --bench "${BENCH}" --out "${RELEASE}" \
     ${APPROVALS:+--approvals ${APPROVALS}} $([ "${INCLUDE_UNREVIEWED:-0}" = 1 ] && echo --include-unreviewed)
-  echo "✅ 第 4 步完成：${RELEASE}/questions.jsonl，导出报告 ${RELEASE}/export_report.md"
+  echo "✅ 第 4 步完成：题目 ${RELEASE}/questions.jsonl，浏览页 ${RELEASE}/index.html，导出报告 ${RELEASE}/export_report.md"
   echo "测评：python3 -B scripts/run_models.py --release ${RELEASE} --base-url <接口地址> --model <模型名> --setting F --out ${RELEASE}/runs/<模型名>_F.jsonl"
   echo "评分：python3 -B scripts/evaluate.py --questions ${RELEASE}/questions.jsonl --runs ${RELEASE}/runs/*.jsonl --out ${RELEASE}/report"
 }

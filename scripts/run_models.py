@@ -17,6 +17,7 @@ import base64
 import io
 import json
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -83,6 +84,8 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--tasks", default="", help="e.g. T1,T5")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--per-subtype", type=int, default=0,
+                    help="run only the first N questions of every subtype (a cheap, representative sample)")
     ap.add_argument("--max-side", type=int, default=0, help="downscale frames (e.g. 896 on a 16 GB Mac)")
     ap.add_argument("--image-as", default="base64", choices=["base64", "path"])
     ap.add_argument("--video-as", default="file", choices=["file", "base64"])
@@ -104,6 +107,15 @@ def main():
         qs = [q for q in qs if q["tags"].get("setting_only") != "F"]
     if a.setting == "blind":   # same text for all interval specs except the boundary-image ones
         qs = [q for q in qs if not (q.get("range") and q["range"]["type"] == "boundary_frames")]
+    if a.per_subtype:
+        seen = {}
+        sample = []
+        for q in qs:
+            k = (q["task"], q["subtype"])
+            if seen.get(k, 0) < a.per_subtype:
+                seen[k] = seen.get(k, 0) + 1
+                sample.append(q)
+        qs = sample
     if a.limit:
         qs = qs[: a.limit]
     url = a.base_url.rstrip("/") + "/chat/completions"
@@ -124,7 +136,9 @@ def main():
             t = time.time()
             try:
                 out, _ = call(q)
-                print(f"[smoke] {q['qid']} {time.time() - t:.1f}s  GT={q['answer']}\n  reply: {out[:300]}")
+                tail = out.strip()[-200:]
+                print(f"[smoke] {q['qid']} {time.time() - t:.1f}s  GT={q['answer']}  answer in braces: {re.findall(r'[{]([^{}]*)[}]', out)[-1:] or 'NONE'}"
+                      f"\n  reply (last 200 chars): {tail}")
             except Exception as e:  # noqa: BLE001
                 print(f"[smoke] {q['qid']} failed: {e}")
                 raise SystemExit(1)

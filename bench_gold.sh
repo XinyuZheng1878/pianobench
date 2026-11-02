@@ -2,11 +2,14 @@
 # Benchmark on the 11 gold-fingering recordings, run stage by stage (each stage can be rerun).
 #
 #   bash bench_gold.sh derive      # 第 2 步：导出、八度质检、指法（PMFinger v2 冻结配置）
+#   bash bench_gold.sh build       # 第 3 步：出题并渲染帧（不调用任何模型 API）
 #
 # 环境变量：
 #   GOLD   第 1 步 prep_gold.py 的输出目录（默认 ../gold_data）
 #   WORK   本流程的工作目录（默认 ../gold_work）
 #   WORKERS 指法步骤并行进程数（默认 8）
+#   PER_SUBTYPE 第 3 步每个子题的题数（11 段合计，默认 20）
+#   BENCH  第 3 步输出目录（默认 ${WORK}/bench_v1，必须是新目录）
 set -euo pipefail
 cd "$(dirname "$0")"
 GOLD=${GOLD:-../gold_data}
@@ -52,7 +55,16 @@ sys.exit(1 if bad else 0)
 PY
 }
 
+build() {
+  BENCH=${BENCH:-${WORK}/bench_v1}
+  step "3 出题并渲染帧 → ${BENCH}（每个子题 ${PER_SUBTYPE:-20} 题）"
+  ${PY} -B scripts/build_bench_gold.py --work "${WORK}" --gold-ids "${GOLD}/gold_ids.txt" --out "${BENCH}" \
+    --per-subtype "${PER_SUBTYPE:-20}"
+  echo "✅ 第 3 步完成：题目 ${BENCH}/questions.jsonl，统计 ${BENCH}/report.md，浏览页 ${BENCH}/index.html"
+}
+
 case "${1:-}" in
   derive) derive ;;
-  *) echo "用法: bash bench_gold.sh derive"; exit 2 ;;
+  build) build ;;
+  *) echo "用法: bash bench_gold.sh derive | build"; exit 2 ;;
 esac

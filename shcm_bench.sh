@@ -34,8 +34,8 @@ skeleton() {
   step "1 提取骨架 ${CAM} → ${WORK}/skeleton（并行 ${JOBS}）"
   list | while read -r tid dir; do
     [ -s "${WORK}/skeleton/${tid}.json" ] && continue
-    [ -f "${dir}/${CAM}" ] || { echo "  ${tid} 没有 ${CAM}，跳过"; continue; }
-    [ -e "${dir}/${CAM}.BaiduPCS-Go-downloading" ] && { echo "  ${tid} ${CAM} 还在下载，跳过"; continue; }
+    [ -f "${dir}/${CAM}" ] || { echo "  ${tid} 没有 ${CAM}，跳过" >&2; continue; }
+    [ -e "${dir}/${CAM}.BaiduPCS-Go-downloading" ] && { echo "  ${tid} ${CAM} 还在下载，跳过" >&2; continue; }
     echo "${tid}	${dir}/${CAM}"
   done > "${WORK}/skeleton/todo.tsv"
   echo "  待提取 $(wc -l < "${WORK}/skeleton/todo.tsv") 首"

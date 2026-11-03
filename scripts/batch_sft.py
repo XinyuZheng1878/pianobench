@@ -505,6 +505,9 @@ def frame_pack(root, q, d):
     W, H = meta["width"], meta["height"]
     corners = np.array(meta["keyboard_corners_px"])
     kh = float(corners[:, 1].max() - corners[:, 1].min())
+    # Delivered frames always show A0 on the left (as in PianoVAM). A camera that sees the keyboard from the
+    # player's side (A0 on the right, player at the top, e.g. SHCM CAM_5) is turned 180 degrees.
+    flip = bool(corners[0, 0] > corners[1, 0])
     # The crop uses only frames actually delivered, and retains both hands and all keys.
     with np.load(root / "perf" / (d.vid + ".skeleton.npz")) as z:
         sk = z["skeleton"][c0:c1]
@@ -526,6 +529,8 @@ def frame_pack(root, q, d):
             if off not in wanted:
                 continue
             im = image[y0:y1]
+            if flip:
+                im = cv2.rotate(im, cv2.ROTATE_180)
             scale = min(1.0, 1280 / max(im.shape[:2]))
             if scale < 1:
                 im = cv2.resize(im, (round(im.shape[1] * scale), round(im.shape[0] * scale)))

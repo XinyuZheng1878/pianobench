@@ -235,8 +235,9 @@ def main():
     done = []
     for tid, t in takes:
         sk = Path(a.skeleton) / f"{tid}.json"
-        if not sk.exists() or not (t / "midi_C2MIDI_Pro.mid").exists() or not (t / a.cam).exists():
-            print(tid, "SKIP (missing skeleton, MIDI or video)", t.name)
+        partial = list(t.glob("*.BaiduPCS-Go-downloading"))
+        if partial or not sk.exists() or not (t / "midi_C2MIDI_Pro.mid").exists() or not (t / a.cam).exists():
+            print(tid, "SKIP (still downloading, or missing skeleton, MIDI or video)", t.name)
             continue
         m = export(tid, t, sk, corners, a.cam, a.swap, a.out)
         done.append(tid)

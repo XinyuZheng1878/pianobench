@@ -76,7 +76,9 @@ def main():
         lab = gf >= 0
         check(rep["used"] and rep["octave_shift"] == 12 and (gf[lab] == truth[lab]).all() and lab.mean() > 0.8,
               f"No. {n}: simulated take aligned, {lab.sum()} fingers, none wrong")
-    check(H.identify("哈农No.3_100BPM_错误指法") == (3, True), "folder name with 错误 is not labelled")
+    check(H.identify("哈农No.3_100BPM_错误指法") == (3, True), "folder name with 错误指法 is not labelled")
+    check(H.identify("哈农No.2_8_同时多项错误")[1] is False and H.identify("Hanon2_wrist_high")[1] is False,
+          "hand-shape error takes keep the printed fingering")
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)

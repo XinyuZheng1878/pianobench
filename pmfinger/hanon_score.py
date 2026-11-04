@@ -228,7 +228,9 @@ def align(on, pitch, notes):
 
 
 NUM_RE = re.compile(r"(?:hanon|哈农|hn)\D{0,8}?(\d{1,2})(?!\d)", re.I)
-WRONG_RE = re.compile(r"错|wrong|error|incorrect|mistake|bad", re.I)
+# only an explicit wrong-FINGERING mark skips a take; hand-shape errors (thumb flat, wrist too high, ...,
+# "同时多项错误") keep the printed fingering, so those takes are labelled
+WRONG_RE = re.compile(r"错误?指法|指法错|wrong[\s_-]*finger|incorrect[\s_-]*finger", re.I)
 
 
 def identify(folder_name):

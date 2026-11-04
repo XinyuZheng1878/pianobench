@@ -81,7 +81,7 @@ def answer_class(row):
     return str(a)
 
 
-def scan(P, source_hash, rnd, stride_s):
+def scan(P, source_hash, rnd, stride_s, passes=1):
     """All eligible candidates of a recording: {key: [(c0, c1, row)]}, plus rejection counts."""
     g = BG.BenchGen(P, rnd)
     cand = collections.defaultdict(list)
@@ -103,7 +103,7 @@ def scan(P, source_hash, rnd, stride_s):
     step = max(1, round(P.fps * stride_s))
     for c0 in range(0, P.T - round(2.6 * P.fps), step):
         c1 = c0 + round(5 * P.fps)
-        if c1 <= P.T:
+        for _ in range(passes if c1 <= P.T else 0):       # each pass draws the hand / note again
             for sub, method in P0.T3.items():
                 take("T3/" + sub, getattr(g, method)(c0, c1), c0, c1)
             take("T2/哪根手指", P0.t2_finger(g, c0, c1), c0, c1)
@@ -204,6 +204,8 @@ def main():
     ap.add_argument("--out", required=True, help="new folder")
     ap.add_argument("--per-subtype", type=int, default=20, help="questions per subtype over all recordings")
     ap.add_argument("--stride", type=float, default=0.5, help="window step in seconds")
+    ap.add_argument("--passes", type=int, default=1,
+                    help="draws per window for the T1-T3 generators (each picks a hand at random; 3 ~ both hands)")
     ap.add_argument("--seed", type=int, default=20261102)
     ap.add_argument("--no-media", action="store_true", help="skip frame rendering (fast dry run)")
     ap.add_argument("--extend", default="", help="earlier bench folder: keep all its questions unchanged (same qid, "
@@ -231,7 +233,7 @@ def main():
         source_hash = digest({p.name: file_hash(p) for p in files})
         P = P0.state.load_raw(files[0], files[-1])
         perfs[vid] = P
-        cand, rej = scan(P, source_hash, random.Random(digest([a.seed, vid])), a.stride)
+        cand, rej = scan(P, source_hash, random.Random(digest([a.seed, vid])), a.stride, a.passes)
         for key, lst in cand.items():
             pools[key] += [(vid, c0, c1, row) for c0, c1, row in lst]
         for key, c in rej.items():

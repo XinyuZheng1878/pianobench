@@ -99,6 +99,17 @@ def explain(row):
     return head + "【依据】" + body + tail + "【结论】所以答案是" + answer_text(q, ans) + "。"
 
 
+def release_conclusion(e, d):
+    """The release turns time questions into 4-option choices: end the explanation with the release answer."""
+    if d.get("answer_type") != "choice" or not d.get("options"):
+        return e
+    body, sep, concl = e.rpartition("【结论】")
+    i = LETTERS.index(d["answer"])
+    was = concl.removeprefix("所以答案是").rstrip("。")
+    extra = f"；程序值为 {was}" if "秒" in was else ""
+    return f"{body}【结论】所以答案是{{{d['answer']}}}（{d['options'][i]}{extra}）。"
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--bench", required=True)
@@ -128,8 +139,10 @@ def main():
         print("  FAILED", qid, e)
     if a.release:
         rel = Path(a.release) / "questions.jsonl"
-        lines = rel.read_text(encoding="utf-8").splitlines()
-        (rel.parent / "questions.no_explanation.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        orig = rel.parent / "questions.no_explanation.jsonl"
+        if not orig.exists():                       # first run: keep the original; reruns start from it
+            orig.write_text(rel.read_text(encoding="utf-8"), encoding="utf-8")
+        lines = orig.read_text(encoding="utf-8").splitlines()
         n, new = 0, []
         for x in lines:
             if not x.strip():
@@ -137,7 +150,7 @@ def main():
             d = json.loads(x)
             e = out.get(d.get("qid")) or out.get(d.get("source_qid", ""))
             if e:
-                d["explanation"], n = e, n + 1
+                d["explanation"], n = release_conclusion(e, d), n + 1
             new.append(json.dumps(d, ensure_ascii=False))
         rel.write_text("\n".join(new) + "\n", encoding="utf-8")
         print(f"release: explanation added to {n}/{len(new)} questions in {rel}")

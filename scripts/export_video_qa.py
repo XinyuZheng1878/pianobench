@@ -8,8 +8,8 @@ explanations from make_explanations.py):
                      (for prediction questions the clip ends at "now"; nothing after it is shown), same crop and
                      orientation as the delivered frames (keyboard + hands; turned 180 degrees when the camera
                      sees A0 on the right), native frame rate, no audio
-  questions.jsonl    {id, video, duration_s, fps, task, subtype, question, options, answer, answer_type,
-                      explanation, source}  -- question text rewritten for video input
+  questions.jsonl    the release rows, ready for  run_models.py --release <out> --setting V : media.video added,
+                     question text rewritten for video input; plus id, video, duration_s, explanation, source
   system_prompt.txt  conventions for video input
   index.html         browse: video player, question, options, answer, explanation
 """
@@ -135,13 +135,14 @@ def main():
             name = f"{i:05d}.mp4"
             fps, n = write_clip(vpath[vid], f0, f1, crop, flip, out / "videos" / name)
             dur = n / fps
-            rows.append(dict(id=f"{i:05d}", video=f"videos/{name}", duration_s=round(dur, 3), fps=round(fps, 3),
-                             task=e["task"], subtype=e["subtype"],
-                             question=video_question(e["question"], dur, bool(e.get("predict"))),
-                             options=e.get("options"), answer=e["answer"], answer_type=e["answer_type"],
-                             explanation=e.get("explanation", ""),
-                             source=dict(qid=qid, video_id=vid, piece=meta[vid].get("piece"),
-                                         start_frame=f0, end_frame=f1 + 1)))
+            # the evaluation row (run_models.py --setting V reads media.video and question) plus readable fields
+            row = dict(e, id=f"{i:05d}", video=f"videos/{name}", duration_s=round(dur, 3), fps=round(fps, 3),
+                       question=video_question(e["question"], dur, bool(e.get("predict"))),
+                       explanation=e.get("explanation", ""),
+                       source=dict(qid=qid, video_id=vid, piece=meta[vid].get("piece"),
+                                   start_frame=f0, end_frame=f1 + 1))
+            row["media"] = dict(e.get("media") or {}, video=f"videos/{name}")
+            rows.append(row)
         except Exception as ex:  # noqa: BLE001
             failed.append((qid, f"{type(ex).__name__}: {ex}"))
         if i % 50 == 0:
@@ -150,6 +151,8 @@ def main():
         for r in rows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
     (out / "system_prompt.txt").write_text(SYSTEM_PROMPT + "\n", encoding="utf-8")
+    if (rel / "media").exists() and not (out / "media").exists():          # frame paths stay valid (setting F)
+        (out / "media").symlink_to((rel / "media").resolve(), target_is_directory=True)
     cards = []
     for r in rows:
         opts = "".join(f"<li>{'ABCDEFG'[k]}. {html.escape(str(o))}</li>" for k, o in enumerate(r["options"] or []))

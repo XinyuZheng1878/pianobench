@@ -163,6 +163,33 @@ def balance_class(e):
     return e["answer"] if e.get("extra", {}).get("time_choice") else content_of(e)
 
 
+def limit_share(evals, factor, seed="share"):
+    """Choice questions: no correct letter may exceed factor x the chance share (1 / number of options) within its
+    subtype, so 'always answer X' scores at most that. Ordered options (finger 1-5, bins) carry their content in the
+    letter, so this also caps the most common content. Drops questions of the commonest letter, seeded random."""
+    by = collections.defaultdict(list)
+    for e in evals:
+        if e.get("answer_type") == "choice" and e.get("options"):
+            by[e["task"] + "/" + e["subtype"]].append(e)
+    drop, dropped = set(), collections.Counter()
+    for k, lst in by.items():
+        n_opt = max(len(e["options"]) for e in lst)
+        rnd = random.Random(f"{seed}/{k}")
+        pools = collections.defaultdict(list)
+        for e in sorted(lst, key=lambda x: x["qid"]):
+            pools[e["answer"]].append(e)
+        for v in pools.values():
+            rnd.shuffle(v)
+        while True:
+            total = sum(len(v) for v in pools.values())
+            top = max(pools, key=lambda c: len(pools[c]))
+            if total == 0 or len(pools[top]) <= factor * total / n_opt:
+                break
+            drop.add(id(pools[top].pop()))
+            dropped[k] += 1
+    return [e for e in evals if id(e) not in drop], dropped
+
+
 def cap_subtype(evals, n, seed):
     """At most n questions per subtype, classes taken in turn (rarest first) so the cap keeps the balance."""
     by = collections.defaultdict(list)
@@ -313,6 +340,8 @@ def main():
                     help="keep time questions as free-form seconds (default: 4-option choice, options >= 1 s apart)")
     ap.add_argument("--per-subtype", type=int, default=0,
                     help="after balancing keep at most this many per subtype, answers taken in turn (0 = no cap)")
+    ap.add_argument("--max-share", type=float, default=1.5,
+                    help="no correct letter above this x chance (1/options) within a subtype (0 = off)")
     ap.add_argument("--min-per-subtype", type=int, default=0,
                     help="leave out subtypes with fewer questions than this (too few to score on their own)")
     ap.add_argument("--include-unreviewed", action="store_true",
@@ -367,6 +396,15 @@ def main():
         evals = [e for e in evals if n_by[e["task"] + "/" + e["subtype"]] >= a.min_per_subtype]
     evals.sort(key=lambda e: (e["task"], e["subtype"], e["qid"]))
     balance_letters(evals)
+    share_drop = collections.Counter()
+    if a.max_share:
+        evals, share_drop = limit_share(evals, a.max_share)
+        if a.min_per_subtype:
+            n_by = collections.Counter(e["task"] + "/" + e["subtype"] for e in evals)
+            for k, v in n_by.items():
+                if v < a.min_per_subtype:
+                    few_drop[k] = v
+            evals = [e for e in evals if n_by[e["task"] + "/" + e["subtype"]] >= a.min_per_subtype]
     keep = [src_by_qid[e["qid"]] for e in evals]
 
     out.mkdir(parents=True)
@@ -384,12 +422,13 @@ def main():
     L = ["# 测评集导出报告", "", f"来源：{bench}", f"题目：{len(keep)}（导出前 {len(rows)}）",
          f"时间题：{'保持填写秒数' if a.time_as_fill else '改为 4 选 1（选项之间至少相差 1 秒）'}；无法构造选项而去掉 {sum(n_time_drop.values())} 题",
          f"未经人工批准而排除的指法题：{sum(review_drop.values())}" + ("（本次用 --include-unreviewed 全部保留）" if a.include_unreviewed else ""),
+         f"正确字母占比上限：选项数分之一的 {a.max_share or '不限'} 倍（全选同一个字母最多得这个分）",
          f"每子题上限：{a.per_subtype or '无'}；少于 {a.min_per_subtype} 题的子题整类不导出：{dict(few_drop) or '无'}",
          "选项与字母：两选项题在每个子题、每种答案内容里随机一半放 A、一半放 B；选项顺序本无含义的多选题（键名、音程等）按随机顺序轮流放到 A、B、C、D；"
          "时间题按正确项在选项中的先后位置均衡（否则选最早的就能得分）；有顺序的分档选项不动，"
          "永远不会成为答案的分档已并入相邻一档（手掌位移 8 个白键宽以上、保持不到 0.2 秒、跨度 8 个白键宽以上）。",
-         "", "| 子题 | 题数 | 因答案超过一半去掉 | 因上限去掉 | 因复核去掉 | 答案分布（内容） | 正确字母分布 | 从不是答案的选项 |",
-         "|---|---:|---:|---:|---:|---|---|---|"]
+         "", "| 子题 | 题数 | 因答案超过一半去掉 | 因上限去掉 | 因字母占比去掉 | 因复核去掉 | 答案分布（内容） | 正确字母分布 | 最多字母占比 | 从不是答案的选项 |",
+         "|---|---:|---:|---:|---:|---:|---|---|---:|---|"]
     ev_by = collections.defaultdict(list)
     for e in evals:
         ev_by[e["task"] + "/" + e["subtype"]].append(e)
@@ -401,8 +440,9 @@ def main():
         fixed = {tuple(e["options"]) for e in ev_by.get(k, []) if e.get("answer_type") == "choice"
                  and not e.get("extra", {}).get("time_choice")}
         never = [o for o in (next(iter(fixed)) if len(fixed) == 1 else ()) if o not in cnt]
-        L.append(f"| {k} | {len(ev_by.get(k, []))} | {bal_drop.get(k, 0)} | {cap_drop.get(k, 0)} | {review_drop.get(k, 0)}"
-                 f" | {dict(cnt)} | {dict(sorted(let.items()))} | {'、'.join(never) or '—'} |")
+        L.append(f"| {k} | {len(ev_by.get(k, []))} | {bal_drop.get(k, 0)} | {cap_drop.get(k, 0)} | {share_drop.get(k, 0)} | {review_drop.get(k, 0)}"
+                 f" | {dict(cnt)} | {dict(sorted(let.items()))}"
+                 f" | {(max(let.values()) / sum(let.values())) if let else 0:.0%} | {'、'.join(never) or '—'} |")
     (out / "export_report.md").write_text("\n".join(L) + "\n", encoding="utf-8")
     print(f"浏览页：{out / 'index.html'}")
     print(f"exported {len(keep)} questions -> {out}  (balance dropped {sum(bal_drop.values())}, "

@@ -95,18 +95,25 @@ def merge_move_bins(e):
     return e
 
 
-def balance_letters(evals):
-    """Two-option questions (left/right hand, which key first, yes/no): the correct letter is A or B in turn
-    within each subtype, so always answering one letter scores 50%. Swapping two options changes nothing else."""
-    used = collections.defaultdict(collections.Counter)
+def balance_letters(evals, seed="letters"):
+    """Two-option questions (left/right hand, which key first, yes/no): within each subtype AND each answer content,
+    exactly half of the questions (odd: one more, side drawn at random) get the correct option as A, a random half
+    chosen by a seeded hash -- no position pattern in the file (no A/B alternation), the letter carries no
+    information about the content (left hand is A as often as B), and always answering one letter scores 50%."""
+    groups = collections.defaultdict(list)
     for e in evals:
-        if e.get("answer_type") != "choice" or len(e.get("options") or []) != 2:
-            continue
-        k = e["task"] + "/" + e["subtype"]
-        want = "A" if used[k]["A"] <= used[k]["B"] else "B"
-        if e["answer"] != want:
-            set_options(e, e["options"][::-1], want)
-        used[k][want] += 1
+        if e.get("answer_type") == "choice" and len(e.get("options") or []) == 2:
+            content = e["options"][LETTERS.index(e["answer"])]
+            groups[(e["task"], e["subtype"], content)].append(e)
+    for key, lst in groups.items():
+        rnd = random.Random(f"{seed}/{key}/{sorted(x['qid'] for x in lst)}")
+        lst = sorted(lst, key=lambda x: x["qid"])
+        rnd.shuffle(lst)
+        first = rnd.choice("AB")
+        for n, e in enumerate(lst):
+            want = first if n % 2 == 0 else ("B" if first == "A" else "A")
+            if e["answer"] != want:
+                set_options(e, e["options"][::-1], want)
     return evals
 
 
@@ -322,7 +329,7 @@ def main():
          f"时间题：{'保持填写秒数' if a.time_as_fill else '改为 4 选 1（选项之间至少相差 1 秒）'}；无法构造选项而去掉 {sum(n_time_drop.values())} 题",
          f"未经人工批准而排除的指法题：{sum(review_drop.values())}" + ("（本次用 --include-unreviewed 全部保留）" if a.include_unreviewed else ""),
          f"每子题上限：{a.per_subtype or '无'}；少于 {a.min_per_subtype} 题的子题整类不导出：{dict(few_drop) or '无'}",
-         "两选项题的正确字母在每个子题内 A/B 轮流；手掌位移的 7 档合并为 5 档（4 个白键宽及以上合为一档）。",
+         "两选项题：每个子题、每种答案内容里，随机一半题的正确选项放 A、另一半放 B（无位置规律，字母与内容无关）；手掌位移的 7 档合并为 5 档（4 个白键宽及以上合为一档）。",
          "", "| 子题 | 题数 | 因答案超过一半去掉 | 因上限去掉 | 因复核去掉 | 答案分布（内容） | 正确字母分布 |",
          "|---|---:|---:|---:|---:|---|---|"]
     ev_by = collections.defaultdict(list)

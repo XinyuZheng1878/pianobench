@@ -10,7 +10,9 @@ Input layout (one folder per take, as delivered on Baidu Netdisk):
 
 Per take writes <take_id>.npz / .skeleton.npz / .meta.json exactly like export_pianovam.py, with
   * notes from the piano's own MIDI (no pedal events in these files, so offset = key release);
-  * gt_hand / gt_finger all -1 (no human fingering for this data);
+  * gt_hand / gt_finger from the printed score fingering for Hanon Nos. 1-20 takes whose folder name gives
+    the number and does not mark wrong fingering, and whose notes match the score (pmfinger/hanon_score.py);
+    -1 everywhere else (no human fingering for this data);
   * label_hand from a simple geometric rule (which palm is nearer the key at the onset, with a clear
     margin), independent of PMFinger, so that p0's "v2 confident AND agrees with the auto label" gate
     has a second opinion to agree with.
@@ -31,6 +33,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from pmfinger import hanon_score  # noqa: E402
 from pmfinger.keys import key_x  # noqa: E402
 from pmfinger.schema import check_output_path  # noqa: E402
 
@@ -134,7 +137,7 @@ def take_list(root):
     return out
 
 
-def export(tid, tdir, skel_path, corners, cam, swap, out_dir):
+def export(tid, tdir, skel_path, corners, cam, swap, out_dir, score_fingering=True, hanon_map=None):
     vpath = str(tdir / cam)
     W, H, fps, nb = video_info(vpath)
     Hm = cv2.getPerspectiveTransform(np.float32(corners), np.float32([[0, 0], [N_WHITE, 0], [N_WHITE, 1], [0, 1]]))
@@ -195,9 +198,13 @@ def export(tid, tdir, skel_path, corners, cam, swap, out_dir):
                 near.append(float(np.nanmin(np.abs(tx - key_x(int(p))))))
     tip_err = float(np.median(near)) if near else float("nan")
     neg = -np.ones(len(pitch), dtype=int)
+    gh, gf, srep = neg, neg, dict(used=False, reason="score fingering off")
+    if score_fingering:
+        num = (hanon_map or {}).get(tdir.name)
+        gh, gf, srep = hanon_score.label_take(on, pitch, tdir.name, number=num)
     d = dict(video_id=np.array(tid), fps=np.array(fps), tips=tips.astype(np.float32), valid=valid,
              note_onset=on, note_offset=off, note_key_offset=off, note_pitch=pitch, note_velocity=vel,
-             label_hand=lh, label_finger=neg, gt_hand=neg, gt_finger=neg, wrist=wrist.astype(np.float32),
+             label_hand=lh, label_finger=neg, gt_hand=gh, gt_finger=gf, wrist=wrist.astype(np.float32),
              frame_offset=np.array(0), video_path=np.array(os.path.abspath(vpath)))
     np.savez_compressed(os.path.join(out_dir, f"{tid}.npz"), **d)
     np.savez_compressed(os.path.join(out_dir, f"{tid}.skeleton.npz"), skeleton=skel, video_size=np.array([W, H]))
@@ -205,7 +212,8 @@ def export(tid, tdir, skel_path, corners, cam, swap, out_dir):
              piece=tdir.name, width=W, height=H, fps=fps, n_frames_video=nb, n_frames_skeleton=T,
              keyboard_corners_px=[list(map(float, c)) for c in corners], mediapipe_label_swapped=bool(do_swap),
              frac_label0_nearer_A0=round(frac_label0_lower, 3), valid_frac=valid.mean(0).round(3).tolist(),
-             n_notes=int(len(pitch)), n_label_hand=int((lh >= 0).sum()), n_gt=0,
+             n_notes=int(len(pitch)), n_label_hand=int((lh >= 0).sum()), n_gt=int((gf >= 0).sum()),
+             score_fingering=srep,
              median_tip_to_key_whitekeys=round(tip_err, 3))
     with open(os.path.join(out_dir, f"{tid}.meta.json"), "w", encoding="utf-8") as f:
         json.dump(m, f, ensure_ascii=False, indent=1)
@@ -220,6 +228,10 @@ def main():
     ap.add_argument("--corners", required=True, help='"x,y x,y x,y x,y": A0-back C8-back C8-front A0-front')
     ap.add_argument("--cam", default="CAM_5.avi")
     ap.add_argument("--swap", default="auto", choices=["auto", "yes", "no"])
+    ap.add_argument("--no-score-fingering", action="store_true",
+                    help="do not label Hanon takes with the printed fingering (pmfinger/hanon_score.py)")
+    ap.add_argument("--hanon-map", default="",
+                    help="optional TSV: take folder name <TAB> Hanon number (0 = do not label); overrides the name")
     ap.add_argument("--list", action="store_true", help="only print take_id -> folder and exit")
     ap.add_argument("--ids-out", default="", help="write the exported take ids here (one per line)")
     a = ap.parse_args()
@@ -232,6 +244,12 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     corners = [tuple(float(v) for v in c.split(",")) for c in a.corners.split()]
     assert len(corners) == 4, "need four corners"
+    hmap = {}
+    if a.hanon_map:
+        for line in Path(a.hanon_map).read_text(encoding="utf-8").splitlines():
+            if line.strip() and not line.startswith("#"):
+                name, num = line.rsplit("\t", 1)
+                hmap[name.strip()] = int(num)
     done = []
     for tid, t in takes:
         sk = Path(a.skeleton) / f"{tid}.json"
@@ -239,11 +257,14 @@ def main():
         if partial or not sk.exists() or not (t / "midi_C2MIDI_Pro.mid").exists() or not (t / a.cam).exists():
             print(tid, "SKIP (still downloading, or missing skeleton, MIDI or video)", t.name)
             continue
-        m = export(tid, t, sk, corners, a.cam, a.swap, a.out)
+        m = export(tid, t, sk, corners, a.cam, a.swap, a.out, not a.no_score_fingering, hmap)
         done.append(tid)
         print(tid, m["piece"], "notes", m["n_notes"], "hand-labelled", m["n_label_hand"], "valid", m["valid_frac"],
               "swap", m["mediapipe_label_swapped"], m["frac_label0_nearer_A0"],
-              "tip-to-key", m["median_tip_to_key_whitekeys"])
+              "tip-to-key", m["median_tip_to_key_whitekeys"],
+              "score-fingering", (f"Hanon {m['score_fingering']['hanon']} match {m['score_fingering']['match_midi']}"
+                                  f" gt {m['n_gt']}") if m["score_fingering"]["used"]
+              else m["score_fingering"].get("reason", "-"))
     if a.ids_out:
         Path(a.ids_out).write_text("\n".join(done) + "\n", encoding="utf-8")
 

@@ -4,7 +4,11 @@
 #   bash shcm_bench.sh list        # 列出每首的编号和原文件夹
 #   bash shcm_bench.sh skeleton    # 从俯拍视频提取手部骨架（MediaPipe，已提取的跳过）
 #   bash shcm_bench.sh derive      # 导出成流程格式 + 自动指法（PMFinger v2 冻结配置）
-#   bash shcm_bench.sh build       # 出题并渲染帧（和金标流程同一套规则；没有人工指法，所以不出指法题）
+#   bash shcm_bench.sh build       # 出题并渲染帧（和金标流程同一套规则）
+#   bash shcm_bench.sh all         # 对 shcm_days.tsv 里每一天跑 skeleton + derive，合并后统一出题（大批量）
+#
+# 指法：哈农 1–20 号、文件夹名不带“错误/wrong”的曲子，按乐谱印刷指法自动标为金标（pmfinger/hanon_score.py），
+# 会出指法类子题；其他曲子没有金标指法。文件夹名认不出号码时，用 HANON_MAP 指定（见 export_shcm.py --hanon-map）。
 #
 # 环境变量：
 #   DAY     某一天的数据目录（默认 .../piano_zsy/data/SHCM_Piano/20261024）
@@ -13,6 +17,8 @@
 #   CAM     用哪路视频（默认 CAM_5.avi，俯拍）
 #   MODEL   MediaPipe 手部模型（默认 PianoVAM-Code 自带的 hand_landmarker.task）
 #   JOBS    骨架提取并行数（默认 8）；WORKERS 指法并行数（默认 8）；PER_SUBTYPE 每个子题题数（默认 20）
+#   PASSES  每个窗口抽题次数（默认 1；3 约等于两只手都试）；HANON_MAP 文件夹名→哈农号码的对照表（可选）
+#   ALL     all 阶段的合并工作目录（默认 ../shcm_work/all）
 set -euo pipefail
 cd "$(dirname "$0")"
 G=/inspire/hdd/global_user/xuguangjun-253208580299
@@ -52,7 +58,7 @@ skeleton() {
 derive() {
   step "2a 导出 → ${WORK}/perf"
   ${PY} -B scripts/export_shcm.py --root "${DAY}" --skeleton "${WORK}/skeleton" --out "${WORK}/perf" \
-    --corners "${CORNERS}" --cam "${CAM}" --ids-out "${WORK}/ids.txt"
+    --corners "${CORNERS}" --cam "${CAM}" --ids-out "${WORK}/ids.txt" ${HANON_MAP:+--hanon-map "${HANON_MAP}"}
   step "2b 指法与松键（冻结配置） → ${WORK}/fing"
   ${PY} -B scripts/run_fingering.py --inputs "${WORK}/perf/shcm-*[0-9].npz" --prior models/prior.npz --calib models/calib.npz \
     --out "${WORK}/fing" --workers "${WORKERS}" --set ${FREEZE}
@@ -63,8 +69,37 @@ build() {
   BENCH=${BENCH:-${WORK}/bench_v1}
   step "3 出题并渲染帧 → ${BENCH}"
   ${PY} -B scripts/build_bench_gold.py --work "${WORK}" --gold-ids "${WORK}/ids.txt" --out "${BENCH}" \
-    --per-subtype "${PER_SUBTYPE:-20}"
+    --per-subtype "${PER_SUBTYPE:-20}" --passes "${PASSES:-1}"
   echo "✅ 第 3 步完成：${BENCH}/questions.jsonl，统计 ${BENCH}/report.md，浏览页 ${BENCH}/index.html"
+}
+
+# 合并多天：perf/ fing/ 里放各天文件的软链接，ids.txt 拼起来，然后在合并目录上出题
+merge() {
+  ALL=${ALL:-../shcm_work/all}
+  step "合并 → ${ALL}"
+  rm -rf "${ALL}/perf" "${ALL}/fing"
+  mkdir -p "${ALL}/perf" "${ALL}/fing"
+  : > "${ALL}/ids.txt"
+  for w in "$@"; do
+    ln -sf "$(cd "${w}/perf" && pwd)"/* "${ALL}/perf/"
+    ln -sf "$(cd "${w}/fing" && pwd)"/* "${ALL}/fing/"
+    cat "${w}/ids.txt" >> "${ALL}/ids.txt"
+  done
+  echo "  共 $(wc -l < "${ALL}/ids.txt") 首"
+}
+
+all() {
+  local works=()
+  while IFS=$'\t' read -r day corners; do
+    [ -z "${day}" ] || [ "${day:0:1}" = "#" ] && continue
+    DAY="${G}/piano_zsy/data/SHCM_Piano/${day}" WORK="../shcm_work/${day}" CORNERS="${corners}" bash "$0" skeleton
+    DAY="${G}/piano_zsy/data/SHCM_Piano/${day}" WORK="../shcm_work/${day}" CORNERS="${corners}" bash "$0" derive
+    works+=("../shcm_work/${day}")
+  done < shcm_days.tsv
+  merge "${works[@]}"
+  WORK=${ALL:-../shcm_work/all}
+  build
+  ${PY} -B scripts/score_fingering_report.py "${WORK}/perf" | tee "${WORK}/score_fingering.tsv"
 }
 
 case "${1:-}" in
@@ -72,5 +107,6 @@ case "${1:-}" in
   skeleton) skeleton ;;
   derive) derive ;;
   build) build ;;
-  *) echo "用法: bash shcm_bench.sh list | skeleton | derive | build"; exit 2 ;;
+  all) all ;;
+  *) echo "用法: bash shcm_bench.sh list | skeleton | derive | build | all"; exit 2 ;;
 esac

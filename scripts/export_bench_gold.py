@@ -194,7 +194,7 @@ TIME_TAILS = ("把两个时间（秒）写在花括号里，用逗号分隔。",
 STEP_S = 1.0          # every option of a time question is at least this far (in seconds) from the others
 
 
-def time_choice(question, at, ans, length, seed):
+def time_choice(question, at, ans, length, seed, used=None):
     """Turn a time-point / time-span question into 4 options at least STEP_S apart (in time, or at one end
     of a span), so that the model only has to locate the moment roughly, not to the frame."""
     rnd = random.Random(seed)
@@ -219,7 +219,12 @@ def time_choice(question, at, ans, length, seed):
     ranks = [k for k in range(4) if len(lower) >= k and len(higher) >= 3 - k]
     if not ranks:
         return None
+    if used is not None:          # balance within the subtype: the feasible rank used least so far
+        low = min(used[r] for r in ranks)
+        ranks = [r for r in ranks if used[r] == low]
     k = rnd.choice(ranks)
+    if used is not None:
+        used[k] += 1
     opts = [true] + rnd.sample(lower, k) + rnd.sample(higher, 3 - k)
     labels = [show(o) for o in opts]
     if len(set(labels)) != 4:
@@ -235,7 +240,7 @@ def time_choice(question, at, ans, length, seed):
     return stem, choices, letter
 
 
-def to_eval(r, time_as_choice=True):
+def to_eval(r, time_as_choice=True, rank_used=None):
     q, t = r["question"], r["private_target"]
     at = ANSWER_TYPE.get(q["answer_type"], q["answer_type"])
     a = t["answer"]
@@ -247,7 +252,8 @@ def to_eval(r, time_as_choice=True):
     question, options = q["question"], q.get("options")
     time_choice_flag = False
     if time_as_choice and at in ("time_point", "time_span"):
-        tc = time_choice(question, at, a, len(frames) / q["clip"]["fps_out"], r["qid"])
+        tc = time_choice(question, at, a, len(frames) / q["clip"]["fps_out"], r["qid"],
+                         None if rank_used is None else rank_used[q["task"] + "/" + q["subtype"]])
         if tc is None:
             return None
         question, options, a = tc
@@ -344,8 +350,9 @@ def main():
     n_time_drop = collections.Counter()
     src_by_qid = {r["qid"]: r for r in keep}
     evals = []
+    rank_used = collections.defaultdict(collections.Counter)
     for r in sorted(keep, key=lambda r: (r["question"]["task"], r["question"]["subtype"], r["qid"])):
-        e = to_eval(r, not a.time_as_fill)
+        e = to_eval(r, not a.time_as_fill, rank_used)
         if e is None:
             n_time_drop[r["question"]["task"] + "/" + r["question"]["subtype"]] += 1
             continue

@@ -66,8 +66,16 @@ def balance(rows):
 
 MOVE_OPTS = ["净位移不足 1 个白键宽", "向左 1 到不足 4 个白键宽", "向右 1 到不足 4 个白键宽", "向左 4 到不足 8 个白键宽",
              "向右 4 到不足 8 个白键宽", "向左 8 个白键宽或更多", "向右 8 个白键宽或更多"]
-MOVE_MERGE = {"向左 4 到不足 8 个白键宽": "向左 4 个白键宽或更多", "向左 8 个白键宽或更多": "向左 4 个白键宽或更多",
-              "向右 4 到不足 8 个白键宽": "向右 4 个白键宽或更多", "向右 8 个白键宽或更多": "向右 4 个白键宽或更多"}
+# Bins the data (or the 8 fps frames) can never put the answer in: merged into their neighbour, so every option
+# can be correct and none is a free elimination.
+MERGES = [
+    (MOVE_OPTS, {"向左 4 到不足 8 个白键宽": "向左 4 个白键宽或更多", "向左 8 个白键宽或更多": "向左 4 个白键宽或更多",
+                 "向右 4 到不足 8 个白键宽": "向右 4 个白键宽或更多", "向右 8 个白键宽或更多": "向右 4 个白键宽或更多"}),
+    (["不到 0.2 秒", "0.2 秒到不足 0.5 秒", "0.5 秒到不足 1 秒", "1 秒或更久"],          # < 0.2 s is not visible at 8 fps
+     {"不到 0.2 秒": "不到 0.5 秒", "0.2 秒到不足 0.5 秒": "不到 0.5 秒"}),
+    (["不到 4 个白键宽", "4 到不足 6 个白键宽", "6 到不足 8 个白键宽", "8 个白键宽或更大"],  # one hand never spans 8+
+     {"6 到不足 8 个白键宽": "6 个白键宽或更大", "8 个白键宽或更大": "6 个白键宽或更大"}),
+]
 
 
 def opts_line(choices):
@@ -83,45 +91,83 @@ def set_options(e, new_choices, new_letter):
     e["options"], e["answer"] = list(new_choices), new_letter
 
 
-def merge_move_bins(e):
-    """Palm displacement over a few seconds almost never reaches 8 white keys, so the 7 bins leave '8 or more'
-    options that are never the answer. Merge 4-8 and 8+ on each side (5 options, all reachable)."""
-    if e.get("answer_type") != "choice" or e.get("options") != MOVE_OPTS:
+def merge_bins(e):
+    if e.get("answer_type") != "choice":
         return e
-    content = e["options"][LETTERS.index(e["answer"])]
-    merged = list(dict.fromkeys(MOVE_MERGE.get(o, o) for o in MOVE_OPTS))
-    content = MOVE_MERGE.get(content, content)
-    set_options(e, merged, LETTERS[merged.index(content)])
+    for opts, m in MERGES:
+        if e.get("options") == opts:
+            content = m.get(e["options"][LETTERS.index(e["answer"])], e["options"][LETTERS.index(e["answer"])])
+            merged = list(dict.fromkeys(m.get(o, o) for o in opts))
+            set_options(e, merged, LETTERS[merged.index(content)])
     return e
 
 
+def content_of(e):
+    if e.get("answer_type") == "choice" and e.get("options"):
+        return e["options"][LETTERS.index(e["answer"])]
+    return json.dumps(e["answer"], ensure_ascii=False)
+
+
 def balance_letters(evals, seed="letters"):
-    """Two-option questions (left/right hand, which key first, yes/no): within each subtype AND each answer content,
-    exactly half of the questions (odd: one more, side drawn at random) get the correct option as A, a random half
-    chosen by a seeded hash -- no position pattern in the file (no A/B alternation), the letter carries no
-    information about the content (left hand is A as often as B), and always answering one letter scores 50%."""
-    groups = collections.defaultdict(list)
+    """Where the option order carries no meaning, place the correct option so that letters are balanced:
+    * two options (hand, which key first, yes/no): within each subtype AND each answer content, a seeded random
+      half has the answer at A, the other half at B -- no position pattern, letter independent of content;
+    * three or more options whose order already varies between questions of the subtype (shuffled keys,
+      intervals...): over a seeded random order of the subtype, the correct option goes to A, B, C, ... in turn
+      (swapped with the option there).
+    Ordered options (bins, finger 1-5, time options listed earliest to latest) are left as they are."""
+    groups, multi = collections.defaultdict(list), collections.defaultdict(list)
     for e in evals:
-        if e.get("answer_type") == "choice" and len(e.get("options") or []) == 2:
-            content = e["options"][LETTERS.index(e["answer"])]
-            groups[(e["task"], e["subtype"], content)].append(e)
-    for key, lst in groups.items():
+        if e.get("answer_type") != "choice" or not e.get("options") or e.get("extra", {}).get("time_choice"):
+            continue
+        k = (e["task"], e["subtype"])
+        if len(e["options"]) == 2:
+            groups[k + (content_of(e),)].append(e)
+        else:
+            multi[k].append(e)
+    sub_count = collections.defaultdict(collections.Counter)
+    for key in sorted(groups):
+        lst = groups[key]
         rnd = random.Random(f"{seed}/{key}/{sorted(x['qid'] for x in lst)}")
         lst = sorted(lst, key=lambda x: x["qid"])
         rnd.shuffle(lst)
-        first = rnd.choice("AB")
+        c = sub_count[key[:2]]                     # odd group: its extra one goes to the letter the subtype has fewer of
+        first = rnd.choice("AB") if c["A"] == c["B"] else ("A" if c["A"] < c["B"] else "B")
         for n, e in enumerate(lst):
             want = first if n % 2 == 0 else ("B" if first == "A" else "A")
             if e["answer"] != want:
                 set_options(e, e["options"][::-1], want)
+            c[want] += 1
+    for key, lst in multi.items():
+        if len({tuple(e["options"]) for e in lst}) == 1 or len({len(e["options"]) for e in lst}) != 1:
+            continue                                   # fixed (meaningful) order, or mixed sizes: leave it
+        n_opt = len(lst[0]["options"])
+        rnd = random.Random(f"{seed}/{key}/{sorted(x['qid'] for x in lst)}")
+        lst = sorted(lst, key=lambda x: x["qid"])
+        rnd.shuffle(lst)
+        cycle = list(LETTERS[:n_opt])
+        rnd.shuffle(cycle)
+        for n, e in enumerate(lst):
+            want = cycle[n % n_opt]
+            i, j = LETTERS.index(e["answer"]), LETTERS.index(want)
+            if i != j:
+                o = list(e["options"])
+                o[i], o[j] = o[j], o[i]
+                set_options(e, o, want)
     return evals
 
 
-def cap_subtype(rows, n, seed):
-    """At most n questions per subtype, taking answers in turn (rarest first) so the cap keeps the balance."""
+def balance_class(e):
+    """What the cap keeps even: for time questions turned into choices the letter (= rank of the true time among
+    options listed earliest to latest; otherwise 'pick the earliest' scores), else the answer content."""
+    return e["answer"] if e.get("extra", {}).get("time_choice") else content_of(e)
+
+
+def cap_subtype(evals, n, seed):
+    """At most n questions per subtype, classes taken in turn (rarest first) so the cap keeps the balance."""
     by = collections.defaultdict(list)
-    for r in rows:
-        by[r["question"]["task"] + "/" + r["question"]["subtype"]].append(r)
+    for e in evals:
+        by[e["task"] + "/" + e["subtype"]].append(e)
     out, dropped = [], collections.Counter()
     for k, lst in by.items():
         if len(lst) <= n:
@@ -129,8 +175,8 @@ def cap_subtype(rows, n, seed):
             continue
         rnd = random.Random(f"{seed}/{k}")
         cls = collections.defaultdict(list)
-        for r in lst:
-            cls[answer_class(r["question"], r["private_target"]["answer"])].append(r)
+        for e in sorted(lst, key=lambda x: x["qid"]):
+            cls[balance_class(e)].append(e)
         for v in cls.values():
             rnd.shuffle(v)
         order = sorted(cls, key=lambda c: (len(cls[c]), c))
@@ -199,12 +245,14 @@ def to_eval(r, time_as_choice=True):
     t0 = frames[0]["t"]
     length = round(frames[-1]["t"] - t0 + 1.0 / q["clip"]["fps_out"], 3)
     question, options = q["question"], q.get("options")
+    time_choice_flag = False
     if time_as_choice and at in ("time_point", "time_span"):
         tc = time_choice(question, at, a, len(frames) / q["clip"]["fps_out"], r["qid"])
         if tc is None:
             return None
         question, options, a = tc
         at = "choice"
+        time_choice_flag = True
     fps = q["clip"]["fps_out"]
     question = (f"（本题共 {len(frames)} 帧，覆盖 {len(frames) / fps:g} 秒，每 {1.0 / fps:.3g} 秒一帧，即 {fps:g} 帧/秒。）"
                 + question)
@@ -218,7 +266,7 @@ def to_eval(r, time_as_choice=True):
         qa_type="单选" if at == "choice" else "填空",
         tags=dict(range_type=(q.get("range") or {}).get("type", "whole"), semantic_id=q["semantic_id"],
                   needs_human=r["needs_human"], batch=r.get("batch", "v1")),
-        extra={}, baselines={})
+        extra=dict(time_choice=True) if time_choice_flag else {}, baselines={})
 
 
 def browse_page(rows, title):
@@ -293,32 +341,33 @@ def main():
             continue
         keep.append(r)
     keep, bal_drop = balance(keep)
-    cap_drop = collections.Counter()
-    if a.per_subtype:
-        keep, cap_drop = cap_subtype(keep, a.per_subtype, "export")
-    few_drop = collections.Counter()
-    if a.min_per_subtype:
-        n_by = collections.Counter(r["question"]["task"] + "/" + r["question"]["subtype"] for r in keep)
-        few_drop = collections.Counter({k: v for k, v in n_by.items() if v < a.min_per_subtype})
-        keep = [r for r in keep if n_by[r["question"]["task"] + "/" + r["question"]["subtype"]] >= a.min_per_subtype]
-
-    out.mkdir(parents=True)
-    (out / "media").symlink_to(bench / "media", target_is_directory=True)
-    keep.sort(key=lambda r: (r["question"]["task"], r["question"]["subtype"], r["qid"]))
     n_time_drop = collections.Counter()
+    src_by_qid = {r["qid"]: r for r in keep}
     evals = []
-    for r in keep:
+    for r in sorted(keep, key=lambda r: (r["question"]["task"], r["question"]["subtype"], r["qid"])):
         e = to_eval(r, not a.time_as_fill)
         if e is None:
             n_time_drop[r["question"]["task"] + "/" + r["question"]["subtype"]] += 1
             continue
-        evals.append(merge_move_bins(e))
+        evals.append(merge_bins(e))
+    cap_drop = collections.Counter()
+    if a.per_subtype:
+        evals, cap_drop = cap_subtype(evals, a.per_subtype, "export")
+    few_drop = collections.Counter()
+    if a.min_per_subtype:
+        n_by = collections.Counter(e["task"] + "/" + e["subtype"] for e in evals)
+        few_drop = collections.Counter({k: v for k, v in n_by.items() if v < a.min_per_subtype})
+        evals = [e for e in evals if n_by[e["task"] + "/" + e["subtype"]] >= a.min_per_subtype]
+    evals.sort(key=lambda e: (e["task"], e["subtype"], e["qid"]))
     balance_letters(evals)
+    keep = [src_by_qid[e["qid"]] for e in evals]
+
+    out.mkdir(parents=True)
+    (out / "media").symlink_to(bench / "media", target_is_directory=True)
     with open(out / "questions.jsonl", "w", encoding="utf-8") as fo:
         for e in evals:
             fo.write(json.dumps(e, ensure_ascii=False) + "\n")
     (out / "index.html").write_text(browse_page(evals, f"测评集 {out.name}"), encoding="utf-8")
-    keep = [r for r in keep if to_eval(r, not a.time_as_fill) is not None]
     (out / "system_prompt.txt").write_text(SYSTEM_PROMPT + "\n", encoding="utf-8")
 
     by = collections.defaultdict(list)
@@ -329,9 +378,11 @@ def main():
          f"时间题：{'保持填写秒数' if a.time_as_fill else '改为 4 选 1（选项之间至少相差 1 秒）'}；无法构造选项而去掉 {sum(n_time_drop.values())} 题",
          f"未经人工批准而排除的指法题：{sum(review_drop.values())}" + ("（本次用 --include-unreviewed 全部保留）" if a.include_unreviewed else ""),
          f"每子题上限：{a.per_subtype or '无'}；少于 {a.min_per_subtype} 题的子题整类不导出：{dict(few_drop) or '无'}",
-         "两选项题：每个子题、每种答案内容里，随机一半题的正确选项放 A、另一半放 B（无位置规律，字母与内容无关）；手掌位移的 7 档合并为 5 档（4 个白键宽及以上合为一档）。",
-         "", "| 子题 | 题数 | 因答案超过一半去掉 | 因上限去掉 | 因复核去掉 | 答案分布（内容） | 正确字母分布 |",
-         "|---|---:|---:|---:|---:|---|---|"]
+         "选项与字母：两选项题在每个子题、每种答案内容里随机一半放 A、一半放 B；选项顺序本无含义的多选题（键名、音程等）按随机顺序轮流放到 A、B、C、D；"
+         "时间题按正确项在选项中的先后位置均衡（否则选最早的就能得分）；有顺序的分档选项不动，"
+         "永远不会成为答案的分档已并入相邻一档（手掌位移 8 个白键宽以上、保持不到 0.2 秒、跨度 8 个白键宽以上）。",
+         "", "| 子题 | 题数 | 因答案超过一半去掉 | 因上限去掉 | 因复核去掉 | 答案分布（内容） | 正确字母分布 | 从不是答案的选项 |",
+         "|---|---:|---:|---:|---:|---|---|---|"]
     ev_by = collections.defaultdict(list)
     for e in evals:
         ev_by[e["task"] + "/" + e["subtype"]].append(e)
@@ -340,8 +391,11 @@ def main():
         cnt = collections.Counter((e["options"][LETTERS.index(e["answer"])] if e.get("answer_type") == "choice"
                                    else json.dumps(e["answer"], ensure_ascii=False)) for e in ev_by.get(k, []))
         let = collections.Counter(e["answer"] for e in ev_by.get(k, []) if e.get("answer_type") == "choice")
+        fixed = {tuple(e["options"]) for e in ev_by.get(k, []) if e.get("answer_type") == "choice"
+                 and not e.get("extra", {}).get("time_choice")}
+        never = [o for o in (next(iter(fixed)) if len(fixed) == 1 else ()) if o not in cnt]
         L.append(f"| {k} | {len(ev_by.get(k, []))} | {bal_drop.get(k, 0)} | {cap_drop.get(k, 0)} | {review_drop.get(k, 0)}"
-                 f" | {dict(cnt)} | {dict(sorted(let.items()))} |")
+                 f" | {dict(cnt)} | {dict(sorted(let.items()))} | {'、'.join(never) or '—'} |")
     (out / "export_report.md").write_text("\n".join(L) + "\n", encoding="utf-8")
     print(f"浏览页：{out / 'index.html'}")
     print(f"exported {len(keep)} questions -> {out}  (balance dropped {sum(bal_drop.values())}, "

@@ -137,13 +137,19 @@ def _rel(nm, prev):
     return 12 * (octv + 1) + SEMI[s] + acc, d
 
 
-def score_notes(n):
+def score_notes(n, plays=1):
+    """plays=2 unfolds the repeat: the whole exercise is inside one volta, followed by one closing note per
+    hand, so a take that observes the repeat (folder name 反复) is the body twice and then the last note."""
     path = SCORE_DIR / f"hanon{int(n):02d}.ily"
     hands = _parse(path)
     out = []
     for h, notes in hands.items():
         _propagate(notes)
-        out += notes
+        body, last = notes[:-1], notes[-1]
+        L = last["t"]
+        for k in range(plays):
+            out += [dict(x, t=x["t"] + k * L, play=k) for x in body]
+        out.append(dict(last, t=last["t"] + (plays - 1) * L, play=plays - 1))
     out.sort(key=lambda x: (x["t"], x["pitch"]))
     return out
 
@@ -252,15 +258,18 @@ def label_take(on, pitch, folder_name, min_match=0.9, number=None):
     if num is None or wrong:
         rep["reason"] = "not a Hanon 1-20 take" if num is None else "folder name marks wrong fingering"
         return gh, gf, rep
-    notes = score_notes(num)
     best = None
-    for shift in (0, 12, -12, 24, -24):      # the take may be played an octave or two away from the print
-        sh = [dict(x, pitch=x["pitch"] + shift) for x in notes]
-        idx = align(on, pitch, sh)
-        if best is None or (idx >= 0).sum() > (best[1] >= 0).sum():
-            best = (shift, idx)
-    shift, idx = best
-    rep["octave_shift"] = shift
+    for plays in (1, 2):                     # with or without the repeat (反复); pick whichever fits better
+        base = score_notes(num, plays)
+        for shift in (0, 12, -12, 24, -24):  # the take may be played an octave or two away from the print
+            sh = [dict(x, pitch=x["pitch"] + shift) for x in base]
+            idx = align(on, pitch, sh)
+            m = int((idx >= 0).sum())
+            fit = min(m / max(1, nn), m / len(sh))
+            if best is None or fit > best[0]:
+                best = (fit, plays, shift, idx, base)
+    _, plays, shift, idx, notes = best
+    rep.update(octave_shift=shift, plays=plays, repeat_in_name="反复" in folder_name)
     # timing check: the takes are played to a metronome, so score position -> onset is close to a straight
     # line; a same-pitch match far off that line is a chance match (a wrong or extra note), drop it
     k = np.flatnonzero(idx >= 0)

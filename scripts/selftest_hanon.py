@@ -76,6 +76,18 @@ def main():
         lab = gf >= 0
         check(rep["used"] and rep["octave_shift"] == 12 and (gf[lab] == truth[lab]).all() and lab.mean() > 0.8,
               f"No. {n}: simulated take aligned, {lab.sum()} fingers, none wrong")
+    ns = H.score_notes(3, plays=2)
+    on = np.array([x["t"] * 0.15 + rng.normal(0, 0.01) for x in ns])
+    p = np.array([x["pitch"] for x in ns])
+    truth = np.array([x["finger"] for x in ns])
+    gh, gf, rep = H.label_take(on, p, "哈农_No.3_TIME_1M39S_BPM_100_反复")
+    lab = gf >= 0
+    check(rep["used"] and rep["plays"] == 2 and (gf[lab] == truth[lab]).all() and lab.mean() > 0.9,
+          f"repeated take (反复) aligned to the unfolded score, {lab.sum()} fingers, none wrong")
+    for name in ("哈农_No.2_TIME_42S_BPM_100", "哈农 no.5_TIME_1M3S_BPM_80", "哈农_no.5_TIME_1M_BPM_100",
+                 "哈农_No.5_TIME_1M56S_BPM_70_反复_L"):
+        check(H.identify(name)[0] in (2, 5) and not H.identify(name)[1], f"number read from {name}")
+    check(H.identify("车尔尼_599_No.65_TIME_51S_BPM_80")[0] is None, "Czerny not taken as Hanon")
     check(H.identify("哈农No.3_100BPM_错误指法") == (3, True), "folder name with 错误指法 is not labelled")
     check(H.identify("哈农No.2_8_同时多项错误")[1] is False and H.identify("Hanon2_wrist_high")[1] is False,
           "hand-shape error takes keep the printed fingering")

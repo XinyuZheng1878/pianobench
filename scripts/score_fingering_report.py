@@ -13,9 +13,9 @@ def main():
         d = json.loads(m.read_text(encoding="utf-8"))
         s = d.get("score_fingering", {})
         rows.append([d["video_id"], d["piece"], s.get("hanon") or "-", "yes" if s.get("used") else "no",
-                     s.get("match_midi", "-"), s.get("octave_shift", "-"), d.get("n_gt", 0), d["n_notes"],
+                     s.get("match_midi", "-"), f'{s.get("shift/plays/seq/anchors", "-")}/{s.get("plays", "-")}/{s.get("n_seq_match", "-")}/{s.get("n_anchor", "-")}', d.get("n_gt", 0), d["n_notes"],
                      s.get("reason", "")])
-    print("\t".join(["take", "folder", "hanon", "labelled", "match", "octave_shift", "gt_fingers", "notes", "why_not"]))
+    print("\t".join(["take", "folder", "hanon", "labelled", "match", "shift/plays/seq/anchors", "gt_fingers", "notes", "why_not"]))
     for r in rows:
         print("\t".join(map(str, r)))
     used = [r for r in rows if r[3] == "yes"]

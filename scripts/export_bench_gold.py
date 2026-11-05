@@ -64,6 +64,79 @@ def balance(rows):
     return kept, dropped
 
 
+MOVE_OPTS = ["净位移不足 1 个白键宽", "向左 1 到不足 4 个白键宽", "向右 1 到不足 4 个白键宽", "向左 4 到不足 8 个白键宽",
+             "向右 4 到不足 8 个白键宽", "向左 8 个白键宽或更多", "向右 8 个白键宽或更多"]
+MOVE_MERGE = {"向左 4 到不足 8 个白键宽": "向左 4 个白键宽或更多", "向左 8 个白键宽或更多": "向左 4 个白键宽或更多",
+              "向右 4 到不足 8 个白键宽": "向右 4 个白键宽或更多", "向右 8 个白键宽或更多": "向右 4 个白键宽或更多"}
+
+
+def opts_line(choices):
+    return "选项：" + "；".join(f"{LETTERS[i]}. {c}" for i, c in enumerate(choices)) + "。"
+
+
+def set_options(e, new_choices, new_letter):
+    """Rewrite a choice question's options (list, answer letter and the option line inside the question text)."""
+    old = opts_line(e["options"])
+    if old not in e["question"]:
+        raise ValueError("option line not found in question text: " + e["qid"])
+    e["question"] = e["question"].replace(old, opts_line(new_choices))
+    e["options"], e["answer"] = list(new_choices), new_letter
+
+
+def merge_move_bins(e):
+    """Palm displacement over a few seconds almost never reaches 8 white keys, so the 7 bins leave '8 or more'
+    options that are never the answer. Merge 4-8 and 8+ on each side (5 options, all reachable)."""
+    if e.get("answer_type") != "choice" or e.get("options") != MOVE_OPTS:
+        return e
+    content = e["options"][LETTERS.index(e["answer"])]
+    merged = list(dict.fromkeys(MOVE_MERGE.get(o, o) for o in MOVE_OPTS))
+    content = MOVE_MERGE.get(content, content)
+    set_options(e, merged, LETTERS[merged.index(content)])
+    return e
+
+
+def balance_letters(evals):
+    """Two-option questions (left/right hand, which key first, yes/no): the correct letter is A or B in turn
+    within each subtype, so always answering one letter scores 50%. Swapping two options changes nothing else."""
+    used = collections.defaultdict(collections.Counter)
+    for e in evals:
+        if e.get("answer_type") != "choice" or len(e.get("options") or []) != 2:
+            continue
+        k = e["task"] + "/" + e["subtype"]
+        want = "A" if used[k]["A"] <= used[k]["B"] else "B"
+        if e["answer"] != want:
+            set_options(e, e["options"][::-1], want)
+        used[k][want] += 1
+    return evals
+
+
+def cap_subtype(rows, n, seed):
+    """At most n questions per subtype, taking answers in turn (rarest first) so the cap keeps the balance."""
+    by = collections.defaultdict(list)
+    for r in rows:
+        by[r["question"]["task"] + "/" + r["question"]["subtype"]].append(r)
+    out, dropped = [], collections.Counter()
+    for k, lst in by.items():
+        if len(lst) <= n:
+            out += lst
+            continue
+        rnd = random.Random(f"{seed}/{k}")
+        cls = collections.defaultdict(list)
+        for r in lst:
+            cls[answer_class(r["question"], r["private_target"]["answer"])].append(r)
+        for v in cls.values():
+            rnd.shuffle(v)
+        order = sorted(cls, key=lambda c: (len(cls[c]), c))
+        take = []
+        while len(take) < n:
+            for c in order:
+                if cls[c] and len(take) < n:
+                    take.append(cls[c].pop())
+        out += take
+        dropped[k] = len(lst) - n
+    return out, dropped
+
+
 TIME_TAILS = ("把两个时间（秒）写在花括号里，用逗号分隔。", "把时间（秒）写在花括号里。")
 STEP_S = 1.0          # every option of a time question is at least this far (in seconds) from the others
 
@@ -177,6 +250,10 @@ def main():
                     help="one or more jsonl files of {qid, fact_hash, decision, reviewer} (from the review page)")
     ap.add_argument("--time-as-fill", action="store_true",
                     help="keep time questions as free-form seconds (default: 4-option choice, options >= 1 s apart)")
+    ap.add_argument("--per-subtype", type=int, default=0,
+                    help="after balancing keep at most this many per subtype, answers taken in turn (0 = no cap)")
+    ap.add_argument("--min-per-subtype", type=int, default=0,
+                    help="leave out subtypes with fewer questions than this (too few to score on their own)")
     ap.add_argument("--include-unreviewed", action="store_true",
                     help="also export finger questions nobody has approved yet (dry evaluation only)")
     a = ap.parse_args()
@@ -209,19 +286,29 @@ def main():
             continue
         keep.append(r)
     keep, bal_drop = balance(keep)
+    cap_drop = collections.Counter()
+    if a.per_subtype:
+        keep, cap_drop = cap_subtype(keep, a.per_subtype, "export")
+    few_drop = collections.Counter()
+    if a.min_per_subtype:
+        n_by = collections.Counter(r["question"]["task"] + "/" + r["question"]["subtype"] for r in keep)
+        few_drop = collections.Counter({k: v for k, v in n_by.items() if v < a.min_per_subtype})
+        keep = [r for r in keep if n_by[r["question"]["task"] + "/" + r["question"]["subtype"]] >= a.min_per_subtype]
 
     out.mkdir(parents=True)
     (out / "media").symlink_to(bench / "media", target_is_directory=True)
     keep.sort(key=lambda r: (r["question"]["task"], r["question"]["subtype"], r["qid"]))
     n_time_drop = collections.Counter()
     evals = []
+    for r in keep:
+        e = to_eval(r, not a.time_as_fill)
+        if e is None:
+            n_time_drop[r["question"]["task"] + "/" + r["question"]["subtype"]] += 1
+            continue
+        evals.append(merge_move_bins(e))
+    balance_letters(evals)
     with open(out / "questions.jsonl", "w", encoding="utf-8") as fo:
-        for r in keep:
-            e = to_eval(r, not a.time_as_fill)
-            if e is None:
-                n_time_drop[r["question"]["task"] + "/" + r["question"]["subtype"]] += 1
-                continue
-            evals.append(e)
+        for e in evals:
             fo.write(json.dumps(e, ensure_ascii=False) + "\n")
     (out / "index.html").write_text(browse_page(evals, f"测评集 {out.name}"), encoding="utf-8")
     keep = [r for r in keep if to_eval(r, not a.time_as_fill) is not None]
@@ -234,10 +321,20 @@ def main():
     L = ["# 测评集导出报告", "", f"来源：{bench}", f"题目：{len(keep)}（导出前 {len(rows)}）",
          f"时间题：{'保持填写秒数' if a.time_as_fill else '改为 4 选 1（选项之间至少相差 1 秒）'}；无法构造选项而去掉 {sum(n_time_drop.values())} 题",
          f"未经人工批准而排除的指法题：{sum(review_drop.values())}" + ("（本次用 --include-unreviewed 全部保留）" if a.include_unreviewed else ""),
-         "", "| 子题 | 题数 | 因答案超过一半去掉 | 因复核去掉 | 答案分布 |", "|---|---:|---:|---:|---|"]
+         f"每子题上限：{a.per_subtype or '无'}；少于 {a.min_per_subtype} 题的子题整类不导出：{dict(few_drop) or '无'}",
+         "两选项题的正确字母在每个子题内 A/B 轮流；手掌位移的 7 档合并为 5 档（4 个白键宽及以上合为一档）。",
+         "", "| 子题 | 题数 | 因答案超过一半去掉 | 因上限去掉 | 因复核去掉 | 答案分布（内容） | 正确字母分布 |",
+         "|---|---:|---:|---:|---:|---|---|"]
+    ev_by = collections.defaultdict(list)
+    for e in evals:
+        ev_by[e["task"] + "/" + e["subtype"]].append(e)
+    keys = sorted(set(keys) | set(cap_drop) | set(few_drop))
     for k in keys:
-        cnt = collections.Counter(answer_class(r["question"], r["private_target"]["answer"]) for r in by.get(k, []))
-        L.append(f"| {k} | {len(by.get(k, []))} | {bal_drop.get(k, 0)} | {review_drop.get(k, 0)} | {dict(cnt)} |")
+        cnt = collections.Counter((e["options"][LETTERS.index(e["answer"])] if e.get("answer_type") == "choice"
+                                   else json.dumps(e["answer"], ensure_ascii=False)) for e in ev_by.get(k, []))
+        let = collections.Counter(e["answer"] for e in ev_by.get(k, []) if e.get("answer_type") == "choice")
+        L.append(f"| {k} | {len(ev_by.get(k, []))} | {bal_drop.get(k, 0)} | {cap_drop.get(k, 0)} | {review_drop.get(k, 0)}"
+                 f" | {dict(cnt)} | {dict(sorted(let.items()))} |")
     (out / "export_report.md").write_text("\n".join(L) + "\n", encoding="utf-8")
     print(f"浏览页：{out / 'index.html'}")
     print(f"exported {len(keep)} questions -> {out}  (balance dropped {sum(bal_drop.values())}, "

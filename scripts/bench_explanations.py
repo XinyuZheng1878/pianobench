@@ -28,6 +28,27 @@ def explain(row, exported):
     label = exported['options'][ord(answer) - ord('A')] if exported.get('options') else answer
     if isinstance(label, list):
         label = '、'.join(map(str, label))
+    if q["task"] == "T3" and q["subtype"] == "手掌净位移":
+        endpoints = {a["id"]: a for a in row.get("atoms", [])}
+        if {"g_start", "g_end"} <= endpoints.keys():
+            first, last = (endpoints[key] for key in ("g_start", "g_end"))
+            times = exported["media"]["frame_times"]
+            observations = []
+            for point in (first, last):
+                index = min(range(len(times)), key=lambda i: abs(times[i] - point["t"]))
+                observations.append(
+                    f'第 {index} 帧（{times[index]:.3f} 秒），'
+                    f'{point["subject"]}掌心在 {point["object"]} 附近'
+                )
+            delta = last["x"] - first["x"]
+            direction = "向左" if delta < 0 else "向右"
+            movement = "净位移不足 1 个白键宽" if abs(delta) < 1 else f"{direction} {abs(delta):.2f} 个白键宽"
+            return (
+                "【观察】" + "。".join(observations) + "。"
+                f'【分析】用端点附近的掌心位置估计，终点减起点为 '
+                f'{last["x"]:.2f} − {first["x"]:.2f} = {delta:.2f} 个白键宽，'
+                f'即{movement}，对应“{label}”。所以答案是{{{answer}}}。'
+            )
     evidence = []
     reasoning = []
     if q['task'] == 'T5':
@@ -48,7 +69,7 @@ def explain(row, exported):
                     reasoning.append(f'两键相距 {pitch_number(notes[1]) - pitch_number(notes[0])} 个半音，'
                                      '按本数据集的半音数音程命名约定判定。')
         elif sub.startswith('按键次数'):
-            reasoning.append(f'筛选指定手或手指后，按首个起音后 40 毫秒分组，生成器记录为 {row['private_target']['answer']} 次；'
+            reasoning.append(f"筛选指定手或手指后，按首个起音后 40 毫秒分组，生成器记录为 {row['private_target']['answer']} 次；"
                              '整只手计数题中，一组算一次。')
         elif sub == '按键序列':
             reasoning.append('按起音时间排序并保留重复键，得到 ' + ' → '.join(a['object'] for a in events) + '。')

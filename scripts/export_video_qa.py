@@ -99,6 +99,21 @@ def write_clip(src, f0, f1, crop, flip, path):
     return fps, n
 
 
+def write_index(rows, out):
+    cards = []
+    for r in rows:
+        opts = "".join(f"<li>{'ABCDEFG'[k]}. {html.escape(str(o))}</li>" for k, o in enumerate(r["options"] or []))
+        cards.append(f"<article><h3>{r['id']} · {html.escape(r['task'] + ' ' + r['subtype'])}</h3>"
+                     f"<video src='{r['video']}' controls preload='none' width='640'></video>"
+                     f"<p>{html.escape(r['question'])}</p><ol style='list-style:none'>{opts}</ol>"
+                     f"<p><b>答案</b> {html.escape(json.dumps(r['answer'], ensure_ascii=False))}</p>"
+                     f"<details><summary>解析</summary><p>{html.escape(r['explanation'])}</p></details>"
+                     f"<small>{html.escape(str(r['source']['piece']))} · {r['source']['qid']}</small></article>")
+    (Path(out) / "index.html").write_text(
+        "<meta charset=utf-8><title>视频题</title><style>body{font:14px sans-serif;max-width:900px;margin:auto}"
+        "article{border-bottom:1px solid #ccc;padding:10px 0}</style>\n" + "\n".join(cards), encoding="utf-8")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--bench", required=True, help="build_bench_gold.py output (has perf/ and results/)")
@@ -153,18 +168,7 @@ def main():
     (out / "system_prompt.txt").write_text(SYSTEM_PROMPT + "\n", encoding="utf-8")
     if (rel / "media").exists() and not (out / "media").exists():          # frame paths stay valid (setting F)
         (out / "media").symlink_to((rel / "media").resolve(), target_is_directory=True)
-    cards = []
-    for r in rows:
-        opts = "".join(f"<li>{'ABCDEFG'[k]}. {html.escape(str(o))}</li>" for k, o in enumerate(r["options"] or []))
-        cards.append(f"<article><h3>{r['id']} · {html.escape(r['task'] + ' ' + r['subtype'])}</h3>"
-                     f"<video src='{r['video']}' controls preload='none' width='640'></video>"
-                     f"<p>{html.escape(r['question'])}</p><ol style='list-style:none'>{opts}</ol>"
-                     f"<p><b>答案</b> {html.escape(json.dumps(r['answer'], ensure_ascii=False))}</p>"
-                     f"<details><summary>解析</summary><p>{html.escape(r['explanation'])}</p></details>"
-                     f"<small>{html.escape(str(r['source']['piece']))} · {r['source']['qid']}</small></article>")
-    (out / "index.html").write_text(
-        "<meta charset=utf-8><title>视频题</title><style>body{font:14px sans-serif;max-width:900px;margin:auto}"
-        "article{border-bottom:1px solid #ccc;padding:10px 0}</style>\n" + "\n".join(cards), encoding="utf-8")
+    write_index(rows, out)
     print(f"done: {len(rows)} questions with video -> {out}/questions.jsonl, {out}/videos/, {out}/index.html")
     for qid, err in failed[:20]:
         print("  FAILED", qid, err)

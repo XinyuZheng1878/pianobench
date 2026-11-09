@@ -81,7 +81,7 @@ def answer_class(row):
     return str(a)
 
 
-def scan(P, source_hash, rnd, stride_s, passes=1, excluded=(), short_windows=False):
+def scan(P, source_hash, rnd, stride_s, passes=1, excluded=(), short_windows=False, training_expansion=False):
     """All eligible candidates of a recording: {key: [(c0, c1, row)]}, plus rejection counts."""
     g = BG.BenchGen(P, rnd)
     cand = collections.defaultdict(list)
@@ -96,6 +96,8 @@ def scan(P, source_hash, rnd, stride_s, passes=1, excluded=(), short_windows=Fal
             if f is None or f["task"] + "/" + f["subtype"] != key:
                 raise P0.GateError("no_eligible_fact_under_spec_gates")
             row = freeze(P, f, source_hash)
+            if training_expansion and (row["needs_human"] or f["subtype"] == "第一次按进新的八度"):
+                return
             if row["qid"] in seen:
                 raise P0.GateError("exact_duplicate")
             seen.add(row["qid"])
@@ -137,7 +139,7 @@ def row_span(row):
     return fr[0]["video_frame"], fr[-1]["video_frame"] + 1
 
 
-def select(pool, n, rnd, existing=()):
+def select(pool, n, rnd, existing=(), allow_overlap=False):
     """Pick until the subtype has n questions (existing ones count): the answer that is rarest so far goes
     first, the recording used least so far goes first, and no two questions of one subtype overlap in time
     in the same recording."""
@@ -167,7 +169,7 @@ def select(pool, n, rnd, existing=()):
             lst = by_cls[cls][v]
             while lst:
                 c0, c1, row = lst.pop()
-                if any(max(c0, a) < min(c1, b) for a, b in spans[v]):
+                if not allow_overlap and any(max(c0, a) < min(c1, b) for a, b in spans[v]):
                     continue
                 taken.append(row)
                 spans[v].append((c0, c1))
@@ -219,7 +221,13 @@ def main():
                     "answer and frames) and only add new ones up to --per-subtype")
     ap.add_argument("--exclude-test", type=Path, help="test release questions.jsonl")
     ap.add_argument("--short-windows", action="store_true", help="also scan shorter T1–T4 clips")
+    ap.add_argument("--training-expansion", action="store_true",
+                    help="allow overlapping training windows and keep multiple facts per subtype")
     a = ap.parse_args()
+    if a.training_expansion and not a.exclude_test:
+        ap.error("--training-expansion requires --exclude-test")
+    if a.training_expansion and a.extend:
+        ap.error("--training-expansion cannot inherit unfiltered rows via --extend")
     excluded = collections.defaultdict(list)
     if a.exclude_test:
         with a.exclude_test.open(encoding="utf-8") as stream:
@@ -265,7 +273,7 @@ def main():
         source_hash = digest({p.name: file_hash(p) for p in files})
         P = P0.state.load_raw(files[0], files[-1])
         perfs[vid] = P
-        cand, rej = scan(P, source_hash, random.Random(digest([a.seed, vid])), a.stride, a.passes, excluded[vid], a.short_windows)
+        cand, rej = scan(P, source_hash, random.Random(digest([a.seed, vid])), a.stride, a.passes, excluded[vid], a.short_windows, a.training_expansion)
         for key, lst in cand.items():
             pools[key] += [(vid, c0, c1, row) for c0, c1, row in lst]
         for key, c in rej.items():
@@ -278,7 +286,7 @@ def main():
         kept_by[r["question"]["task"] + "/" + r["question"]["subtype"]].append(r)
     new = []
     for key in sorted(set(pools) | set(kept_by)):
-        new += select(pools.get(key, []), a.per_subtype, rnd, kept_by.get(key, []))
+        new += select(pools.get(key, []), a.per_subtype, rnd, kept_by.get(key, []), allow_overlap=a.training_expansion)
     for r in new:
         r["batch"] = Path(a.out).name
     rows = keep + new

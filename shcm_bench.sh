@@ -69,7 +69,8 @@ build() {
   BENCH=${BENCH:-${WORK}/bench_v1}
   step "3 出题并渲染帧 → ${BENCH}"
   ${PY} -B scripts/build_bench_gold.py --work "${WORK}" --gold-ids "${WORK}/ids.txt" --out "${BENCH}" \
-    --per-subtype "${PER_SUBTYPE:-20}" --passes "${PASSES:-1}"
+    --per-subtype "${PER_SUBTYPE:-20}" --passes "${PASSES:-1}" \
+    --stride "${STRIDE:-0.5}" --seed "${SEED:-20261102}" ${EXTEND:+--extend "${EXTEND}"}
   echo "✅ 第 3 步完成：${BENCH}/questions.jsonl，统计 ${BENCH}/report.md，浏览页 ${BENCH}/index.html"
 }
 

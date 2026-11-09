@@ -176,7 +176,7 @@ def select(pool, n, rnd, existing=()):
 
 
 def report(out, rows, pools, rejected, videos):
-    L = ["# Benchmark 出题报告（11 段金标录音）", "",
+    L = ["# Benchmark 出题报告", "",
          f"题目总数：{len(rows)}；其中需人工复核指法的：{sum(r['needs_human'] for r in rows)}", "",
          "| 子题 | 候选 | 入选 | 答案分布 | 录音分布 |", "|---|---:|---:|---|---|"]
     by = collections.defaultdict(list)
@@ -211,6 +211,8 @@ def main():
     ap.add_argument("--extend", default="", help="earlier bench folder: keep all its questions unchanged (same qid, "
                     "answer and frames) and only add new ones up to --per-subtype")
     a = ap.parse_args()
+    if a.stride <= 0 or a.passes < 1 or a.per_subtype < 1:
+        ap.error("stride, passes and per-subtype must be positive")
     work, out = Path(a.work).resolve(), Path(a.out).resolve()
     if out.exists():
         raise SystemExit(f"{out} already exists; choose a new --out")

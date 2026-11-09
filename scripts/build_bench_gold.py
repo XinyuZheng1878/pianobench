@@ -81,7 +81,7 @@ def answer_class(row):
     return str(a)
 
 
-def scan(P, source_hash, rnd, stride_s, passes=1, excluded=()):
+def scan(P, source_hash, rnd, stride_s, passes=1, excluded=(), short_windows=False):
     """All eligible candidates of a recording: {key: [(c0, c1, row)]}, plus rejection counts."""
     g = BG.BenchGen(P, rnd)
     cand = collections.defaultdict(list)
@@ -105,18 +105,20 @@ def scan(P, source_hash, rnd, stride_s, passes=1, excluded=()):
 
     step = max(1, round(P.fps * stride_s))
     for c0 in range(0, P.T - round(2.6 * P.fps), step):
-        c1 = c0 + round(5 * P.fps)
-        for _ in range(passes if c1 <= P.T and available(c0, c1) else 0):       # each pass draws the hand / note again
-            for sub, method in P0.T3.items():
-                take("T3/" + sub, getattr(g, method)(c0, c1), c0, c1)
-            take("T2/哪根手指", P0.t2_finger(g, c0, c1), c0, c1)
-            for key, method in EXTRA.items():
-                take(key, getattr(g, method)(c0, c1), c0, c1)
-        c1 = c0 + round(6 * P.fps)
-        if c1 <= P.T and available(c0, c1):
-            found = {f["subtype"]: f for f in g.t4(c0, c1)}
-            for sub in P0.T4:
-                take("T4/" + sub, found.get(sub), c0, c1)
+        for seconds in (3, 4, 5) if short_windows else (5,):
+            c1 = c0 + round(seconds * P.fps)
+            for _ in range(passes if c1 <= P.T and available(c0, c1) else 0):       # each pass draws the hand / note again
+                for sub, method in P0.T3.items():
+                    take("T3/" + sub, getattr(g, method)(c0, c1), c0, c1)
+                take("T2/哪根手指", P0.t2_finger(g, c0, c1), c0, c1)
+                for key, method in EXTRA.items():
+                    take(key, getattr(g, method)(c0, c1), c0, c1)
+        for seconds in (4, 5, 6) if short_windows else (6,):
+            c1 = c0 + round(seconds * P.fps)
+            if c1 <= P.T and available(c0, c1):
+                found = {f["subtype"]: f for f in g.t4(c0, c1)}
+                for sub in P0.T4:
+                    take("T4/" + sub, found.get(sub), c0, c1)
         cut = c0 + round(2 * P.fps)
         if not available(c0, cut + 1 + round(P.fps)):
             continue
@@ -216,6 +218,7 @@ def main():
     ap.add_argument("--extend", default="", help="earlier bench folder: keep all its questions unchanged (same qid, "
                     "answer and frames) and only add new ones up to --per-subtype")
     ap.add_argument("--exclude-test", type=Path, help="test release questions.jsonl")
+    ap.add_argument("--short-windows", action="store_true", help="also scan shorter T1–T4 clips")
     a = ap.parse_args()
     excluded = collections.defaultdict(list)
     if a.exclude_test:
@@ -262,7 +265,7 @@ def main():
         source_hash = digest({p.name: file_hash(p) for p in files})
         P = P0.state.load_raw(files[0], files[-1])
         perfs[vid] = P
-        cand, rej = scan(P, source_hash, random.Random(digest([a.seed, vid])), a.stride, a.passes, excluded[vid])
+        cand, rej = scan(P, source_hash, random.Random(digest([a.seed, vid])), a.stride, a.passes, excluded[vid], a.short_windows)
         for key, lst in cand.items():
             pools[key] += [(vid, c0, c1, row) for c0, c1, row in lst]
         for key, c in rej.items():

@@ -52,6 +52,18 @@ def stem(q):
     return q["question"].split("选项：")[0]
 
 
+# wording shared by whole subtypes; it contains option words by accident ("左右手" has 右手, "会不会" has 不会)
+BOILERPLATE = ("左右手均指演奏者本人", "会不会", "左右手")
+EXAMPLE = re.compile(r"例如\s*\{[^}]*\}")
+
+
+def stem_for_leak(q):
+    s = EXAMPLE.sub("", stem(q))
+    for b in BOILERPLATE:
+        s = s.replace(b, "")
+    return s
+
+
 def times_in(text):
     return [float(x) for x in re.findall(r"第\s*([0-9]+(?:\.[0-9]+)?)\s*秒", text)]
 
@@ -73,13 +85,16 @@ def check_one(q, root, video_frames):
         else:
             right = str(o[LETTERS.index(q["answer"])])
             others = [str(x) for x in o if str(x) != right]
-            st = stem(q)
+            st = stem_for_leak(q)
             if len(right) >= 2 and right in st and not any(x in st for x in others if len(x) >= 2):
                 fails.append(("answer_in_stem", f"correct option '{right}' is in the stem"))
     else:
         a = q["answer"]
-        if isinstance(a, str) and len(a) >= 2 and re.search(rf"(?<![A-G#0-9]){re.escape(a)}(?![#0-9])", stem(q)):
+        pat = rf"(?<![A-G#0-9]){re.escape(a)}(?![#0-9])" if isinstance(a, str) and len(a) >= 2 else None
+        if pat and re.search(pat, stem_for_leak(q)):
             fails.append(("answer_in_stem", f"answer '{a}' is in the stem"))
+        elif pat and re.search(pat, "".join(EXAMPLE.findall(stem(q)))):
+            fails.append(("example_is_answer", f"the example in the stem is the answer '{a}'"))
     ex = q.get("explanation") or ""
     if ex:
         want = "{" + (q["answer"] if q["answer_type"] == "choice" else "")
@@ -92,9 +107,9 @@ def check_one(q, root, video_frames):
         if q["answer_type"] == "choice":
             for c in q.get("options") or []:
                 ts += times_in(str(c))
-        elif isinstance(q["answer"], (int, float)) and q["answer_type"] != "count":
+        elif q["answer_type"] == "time_point" and isinstance(q["answer"], (int, float)):   # counts are not times
             ts.append(float(q["answer"]))
-        elif isinstance(q["answer"], list) and all(isinstance(x, (int, float)) for x in q["answer"]):
+        elif q["answer_type"] == "time_span" and isinstance(q["answer"], list):
             ts += [float(x) for x in q["answer"]]
         bad = [t for t in ts if t > dur + 0.05 or t < 0]
         if bad:
@@ -119,7 +134,7 @@ def check_one(q, root, video_frames):
 def baselines(qs):
     rng = np.random.default_rng(0)
     rows = {}
-    for kind in ("random", "copy_current"):
+    for kind in ("random", "copy"):
         try:
             outs = EV.baseline_outputs(qs, kind, rng)
         except Exception:  # noqa: BLE001
@@ -276,7 +291,7 @@ def main():
     L = [f"# 数据质量检查：{root.name}", "", f"题目 {len(qs)} 道，子题 {len(subs)} 个。", "",
          "## 1. 自动检查", "", "| 检查 | 不通过题数 | 说明 |", "|---|---:|---|"]
     desc = dict(answer_roundtrip="标准答案交给判分程序能否判对", option_line="题干里的选项与选项列表一致、无重复",
-                explanation="解析结论与标准答案一致", answer_in_stem="题干里直接写出了正确答案",
+                explanation="解析结论与标准答案一致", answer_in_stem="题干里直接写出了正确答案", example_is_answer="题干里的示例答案恰好等于正确答案",
                 media="视频存在且帧数正确", time_in_clip="答案和选项里的时间都在片段内", duplicate="同一片段同一题出现两次")
     for c in desc:
         L.append(f"| {c} | {fc.get(c, 0)} | {desc[c]} |")

@@ -19,6 +19,8 @@ import json
 import random
 from pathlib import Path
 
+from bench_explanations import explain
+
 LETTERS = "ABCDEFG"
 ANSWER_TYPE = {"key_seq": "key_sequence"}      # bench name -> evaluate.py name; others are identical
 
@@ -117,18 +119,18 @@ def to_eval(r, time_as_choice=True):
         a = round(float(a), 3) if at == "time_point" else [round(float(x), 3) for x in a]
     frames = r["media"]["frames"]
     t0 = frames[0]["t"]
-    length = round(frames[-1]["t"] - t0 + 1.0 / q["clip"]["fps_out"], 3)
+    length = (frames[-1]["native_frame"] - frames[0]["native_frame"] + 1) / q["clip"]["fps"]
     question, options = q["question"], q.get("options")
     if time_as_choice and at in ("time_point", "time_span"):
-        tc = time_choice(question, at, a, len(frames) / q["clip"]["fps_out"], r["qid"])
+        tc = time_choice(question, at, a, length, r["qid"])
         if tc is None:
             return None
         question, options, a = tc
         at = "choice"
     fps = q["clip"]["fps_out"]
-    question = (f"（本题共 {len(frames)} 帧，覆盖 {len(frames) / fps:g} 秒，每 {1.0 / fps:.3g} 秒一帧，即 {fps:g} 帧/秒。）"
+    question = (f"（本题共 {len(frames)} 帧，覆盖 {length:.3f} 秒，约 {fps:g} 帧/秒；各帧实际时间以帧标签为准。）"
                 + question)
-    return dict(
+    result = dict(
         qid=r["qid"], fact_id=r["qid"], task=q["task"], subtype=q["subtype"], level=q["level"],
         video_id=q["video_id"], question=question, answer_type=at, answer=a,
         options=options, frame_fps=q["clip"]["fps_out"],
@@ -139,6 +141,8 @@ def to_eval(r, time_as_choice=True):
         tags=dict(range_type=(q.get("range") or {}).get("type", "whole"), semantic_id=q["semantic_id"],
                   needs_human=r["needs_human"], batch=r.get("batch", "v1")),
         extra={}, baselines={})
+    result["explanation"] = explain(r, result)
+    return result
 
 
 def browse_page(rows, title):
